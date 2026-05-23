@@ -143,9 +143,10 @@ Resources:
       Handler: crawler.workers.static_worker.handler
       MemorySize: 1024
       Timeout: 60
-      # New AWS accounts have a default account-wide concurrency cap of 10.
-      # Cap this consumer at 5 so api + headless still have headroom.
-      ReservedConcurrentExecutions: 5
+      # ReservedConcurrentExecutions: 20  # uncomment once account quota is raised
+      # New AWS accounts have a 10-concurrent quota AND a 10-minimum unreserved
+      # constraint, so any reservation is rejected. SQS BatchSize: 5 still
+      # caps inflight work per Lambda invocation.
       Environment:
         Variables:
           PAGES_TABLE: !Ref PagesTable

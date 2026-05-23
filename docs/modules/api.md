@@ -11,7 +11,8 @@ and the in-process result type.
 | File | One-liner |
 |---|---|
 | `main.py` | FastAPI app factory + `/` (HTML demo) + `/health` + Mangum `handler` for Lambda. |
-| `routes.py` | `/extract`, `/extract?fixture=1`, `/pages`, `/pages/{url_hash}`, `/batch`, `/jobs/{job_id}`. |
+| `routes.py` | `/extract`, `/extract?fixture=1`, `/pages`, `/pages/{url_hash}`, `/batch`, `/jobs/{job_id}`. Data endpoints carry `Depends(require_api_key)`. |
+| `auth.py` | `require_api_key` FastAPI dependency built on `fastapi.security.HTTPBearer`. No-op when `API_KEY` env is empty; otherwise enforces `Authorization: Bearer <key>` with `hmac.compare_digest`. Registering via `HTTPBearer` puts the scheme in the OpenAPI doc so Swagger UI renders an Authorize button. |
 | `schemas.py` | `ExtractResult`, `Topic`, `ExtractRequest`, `BatchRequest`, `BatchResponse`, `JobStatus`. |
 | `__init__.py` | Empty marker. |
 
@@ -20,6 +21,10 @@ and the in-process result type.
 - `crawler.api.main.app` — the FastAPI instance (use with `uvicorn`).
 - `crawler.api.main.handler` — Mangum Lambda adapter wrapping `app`.
 - `crawler.api.routes.router` — the `APIRouter` mounted on `app`.
+- `crawler.api.auth.require_api_key` — Bearer dependency attached to every
+  data route; also provides the OpenAPI security scheme so Swagger UI at
+  `/docs` renders an Authorize button (paste key once, all "Try it out"
+  calls send the header automatically).
 - `crawler.api.schemas.ExtractResult` — single source of truth for the
   extract response shape; also used internally by the pipeline.
 

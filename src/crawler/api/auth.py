@@ -23,7 +23,7 @@ bearer_scheme = HTTPBearer(
 
 
 def require_api_key(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),  # noqa: B008 - FastAPI dependency-injection pattern
 ) -> None:
     """FastAPI dependency: enforce Bearer token when API_KEY env var is set.
 

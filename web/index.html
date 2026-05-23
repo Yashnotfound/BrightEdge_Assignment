@@ -26,6 +26,10 @@ a { color: #0366d6; }
   </label>
 </div>
 <div class="row">
+  <label class="muted" for="apikey">API key (leave blank for local-dev mode):</label>
+  <input id="apikey" type="password" placeholder="paste key from submission email" autocomplete="off">
+</div>
+<div class="row">
   <input id="url" type="url" placeholder="https://www.example.com/article" value="">
 </div>
 <div class="row">
@@ -40,6 +44,10 @@ const url = document.getElementById('url');
 const out = document.getElementById('out');
 const status = document.getElementById('status');
 
+// Restore saved API key
+const savedKey = localStorage.getItem('apikey');
+if (savedKey) document.getElementById('apikey').value = savedKey;
+
 btn.addEventListener('click', async () => {
   if (!url.value) return;
   const useFixture = document.getElementById('fixture').checked;
@@ -48,9 +56,13 @@ btn.addEventListener('click', async () => {
   const t0 = performance.now();
   try {
     const qs = useFixture ? '?fixture=1' : '';
+    const apiKey = document.getElementById('apikey').value.trim();
+    if (apiKey) localStorage.setItem('apikey', apiKey);
+    const headers = {'Content-Type': 'application/json'};
+    if (apiKey) headers['Authorization'] = 'Bearer ' + apiKey;
     const r = await fetch('/extract' + qs, {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: headers,
       body: JSON.stringify({url: url.value})
     });
     const data = await r.json();

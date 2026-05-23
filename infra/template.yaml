@@ -2,6 +2,13 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: BrightEdge Crawler — initial Lambda hello world
 
+Parameters:
+  ApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Bearer token required on data endpoints. Leave empty for unauthenticated mode (NOT recommended for public deployments).
+
 Globals:
   Function:
     Runtime: python3.12
@@ -30,6 +37,7 @@ Resources:
           LOG_LEVEL: INFO
           STATIC_QUEUE_URL: !Ref StaticQueue
           HEADLESS_FUNCTION_NAME: !Ref HeadlessWorkerFunction
+          API_KEY: !Ref ApiKey
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref PagesTable }
         - DynamoDBCrudPolicy: { TableName: !Ref JobsTable }

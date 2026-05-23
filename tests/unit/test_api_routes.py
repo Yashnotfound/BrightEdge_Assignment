@@ -8,6 +8,79 @@ from crawler.api.main import app
 from crawler.api.schemas import ExtractResult, Topic
 
 
+def test_extract_requires_auth_when_key_is_set(monkeypatch):
+    """When API_KEY is set, /extract without Authorization returns 401."""
+    monkeypatch.setenv("API_KEY", "test-secret-key")
+    client = TestClient(app)
+    response = client.post("/extract", json={"url": "http://example.com"})
+    assert response.status_code == 401
+    assert "Bearer" in response.headers.get("WWW-Authenticate", "")
+
+
+def test_extract_succeeds_with_correct_bearer(monkeypatch):
+    """With valid Bearer token, /extract passes through to the handler."""
+    monkeypatch.setenv("API_KEY", "test-secret-key")
+    fake_result = ExtractResult(
+        url="http://example.com",
+        url_hash="d" * 64,
+        fetched_at=datetime.now(UTC),
+        fetcher_used="static",
+        http_status=200,
+        title="OK",
+    )
+    monkeypatch.setattr(
+        "crawler.api.routes.extract_pipeline",
+        AsyncMock(return_value=(fake_result, "<html></html>")),
+    )
+    client = TestClient(app)
+    response = client.post(
+        "/extract",
+        headers={"Authorization": "Bearer test-secret-key"},
+        json={"url": "http://example.com"},
+    )
+    assert response.status_code == 200
+
+
+def test_extract_rejects_wrong_bearer(monkeypatch):
+    """Wrong Bearer token returns 401."""
+    monkeypatch.setenv("API_KEY", "test-secret-key")
+    client = TestClient(app)
+    response = client.post(
+        "/extract",
+        headers={"Authorization": "Bearer wrong-key"},
+        json={"url": "http://example.com"},
+    )
+    assert response.status_code == 401
+
+
+def test_health_is_never_protected(monkeypatch):
+    """/health should never require auth even when API_KEY is set."""
+    monkeypatch.setenv("API_KEY", "test-secret-key")
+    client = TestClient(app)
+    response = client.get("/health")
+    assert response.status_code == 200
+
+
+def test_no_auth_required_when_api_key_unset(monkeypatch):
+    """Without API_KEY env var, all routes are open (local dev mode)."""
+    monkeypatch.delenv("API_KEY", raising=False)
+    fake_result = ExtractResult(
+        url="http://example.com",
+        url_hash="e" * 64,
+        fetched_at=datetime.now(UTC),
+        fetcher_used="static",
+        http_status=200,
+        title="OK",
+    )
+    monkeypatch.setattr(
+        "crawler.api.routes.extract_pipeline",
+        AsyncMock(return_value=(fake_result, "<html></html>")),
+    )
+    client = TestClient(app)
+    response = client.post("/extract", json={"url": "http://example.com"})
+    assert response.status_code == 200
+
+
 def test_health_endpoint_returns_ok():
     client = TestClient(app)
     response = client.get("/health")

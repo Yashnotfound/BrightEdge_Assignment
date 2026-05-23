@@ -7,8 +7,9 @@ import uuid
 from urllib.parse import urlsplit
 
 import boto3
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from crawler.api.auth import require_api_key
 from crawler.api.schemas import (
     BatchRequest,
     BatchResponse,
@@ -81,7 +82,8 @@ async def _persist(result: ExtractResult, html: str | None) -> None:
     )
 
 
-@router.post("/extract", response_model=ExtractResult, tags=["extract"])
+@router.post("/extract", response_model=ExtractResult, tags=["extract"],
+             dependencies=[Depends(require_api_key)])
 async def extract(
     req: ExtractRequest,
     fixture: int = Query(
@@ -124,7 +126,8 @@ async def extract(
     return result
 
 
-@router.get("/pages", response_model=ExtractResult, tags=["pages"])
+@router.get("/pages", response_model=ExtractResult, tags=["pages"],
+            dependencies=[Depends(require_api_key)])
 def pages_by_url(url: str = Query(..., description="URL to look up")) -> ExtractResult:
     s = _settings()
     result = PagesRepo(table_name=s.pages_table).get(url_hash=_url_hash(url))
@@ -133,7 +136,8 @@ def pages_by_url(url: str = Query(..., description="URL to look up")) -> Extract
     return result
 
 
-@router.get("/pages/{url_hash}", response_model=ExtractResult, tags=["pages"])
+@router.get("/pages/{url_hash}", response_model=ExtractResult, tags=["pages"],
+            dependencies=[Depends(require_api_key)])
 def pages_by_hash(url_hash: str) -> ExtractResult:
     s = _settings()
     result = PagesRepo(table_name=s.pages_table).get(url_hash=url_hash)
@@ -142,7 +146,8 @@ def pages_by_hash(url_hash: str) -> ExtractResult:
     return result
 
 
-@router.post("/batch", response_model=BatchResponse, tags=["batch"])
+@router.post("/batch", response_model=BatchResponse, tags=["batch"],
+             dependencies=[Depends(require_api_key)])
 def batch(req: BatchRequest) -> BatchResponse:
     s = _settings()
     if not s.static_queue_url or not s.jobs_table:
@@ -167,7 +172,8 @@ def batch(req: BatchRequest) -> BatchResponse:
     return BatchResponse(job_id=job_id)
 
 
-@router.get("/jobs/{job_id}", response_model=JobStatus, tags=["batch"])
+@router.get("/jobs/{job_id}", response_model=JobStatus, tags=["batch"],
+            dependencies=[Depends(require_api_key)])
 def jobs_get(job_id: str) -> JobStatus:
     s = _settings()
     status = JobsRepo(table_name=s.jobs_table).get(job_id=job_id)

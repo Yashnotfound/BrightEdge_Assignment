@@ -8,7 +8,13 @@ from urllib.parse import urlsplit
 import boto3
 from fastapi import APIRouter, HTTPException, Query
 
-from crawler.api.schemas import BatchRequest, BatchResponse, ExtractRequest, ExtractResult, JobStatus
+from crawler.api.schemas import (
+    BatchRequest,
+    BatchResponse,
+    ExtractRequest,
+    ExtractResult,
+    JobStatus,
+)
 from crawler.config import load_settings
 from crawler.fetcher.headless import invoke_headless
 from crawler.pipeline import extract_pipeline
@@ -46,7 +52,10 @@ def _persist(result: ExtractResult, html: str | None) -> None:
 @router.post("/extract", response_model=ExtractResult, tags=["extract"])
 async def extract(
     req: ExtractRequest,
-    fixture: int = Query(0, ge=0, le=1, description="If 1 and URL matches Amazon test URL, returns saved fixture"),
+    fixture: int = Query(
+        0, ge=0, le=1,
+        description="If 1 and URL matches Amazon test URL, returns saved fixture",
+    ),
 ) -> ExtractResult:
     if fixture == 1 and "amazon.com" in req.url.lower() and "cuisinart" in req.url.lower():
         from crawler.fixtures import amazon_toaster
@@ -72,13 +81,13 @@ async def extract(
             if headless_result.extraction_confidence > result.extraction_confidence:
                 result = headless_result
                 raw_html = None  # headless wrote its own copy (or persist=False)
-        except Exception:  # noqa: BLE001
-            pass  # Headless failed — keep the static result
+        except Exception:  # noqa: BLE001, S110 - degrade gracefully to static result
+            pass
 
     try:
         if raw_html is not None:
             _persist(result, raw_html)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110 - persistence failure must not break the response
         pass
     return result
 

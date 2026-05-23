@@ -48,5 +48,8 @@ def amazon_toaster() -> ExtractResult:
             Topic(label="compact 2-slice", score=0.45, sources=["title", "yake"]),
         ],
         extraction_confidence=0.95,
-        errors=["fixture_mode: served from stored response, live fetch unavailable due to anti-bot"],
+        errors=[
+            "fixture_mode: served from stored response, "
+            "live fetch unavailable due to anti-bot",
+        ],
     )

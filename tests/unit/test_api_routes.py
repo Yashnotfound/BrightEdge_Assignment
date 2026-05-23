@@ -1,6 +1,6 @@
 """Smoke tests for the FastAPI app."""
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
-from datetime import datetime, UTC
 
 from fastapi.testclient import TestClient
 

@@ -1,5 +1,5 @@
 """Tests for heuristic topic candidate extraction."""
-from crawler.classifier.heuristics import TopicCandidate, candidates_from_meta_and_jsonld
+from crawler.classifier.heuristics import candidates_from_meta_and_jsonld
 from crawler.extractor.meta import MetaTags
 
 

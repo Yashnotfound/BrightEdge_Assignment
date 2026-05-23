@@ -1,7 +1,5 @@
 """Tests for the static SQS worker."""
-import json
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
 
 import boto3
 import pytest

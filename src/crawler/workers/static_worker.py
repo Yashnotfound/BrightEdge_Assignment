@@ -42,11 +42,11 @@ def _process_one(message_body: dict) -> None:
         ):
             try:
                 from crawler.fetcher.headless import invoke_headless
-                data = invoke_headless(url, persist=True)  # headless persists itself
+                invoke_headless(url, persist=True)  # headless persists itself
                 if jobs:
                     jobs.increment(job_id=job_id, succeeded=1)
                 return
-            except Exception:
+            except Exception:  # noqa: BLE001
                 logger.exception("headless escalation failed; keeping static result")
 
         domain = urlsplit(result.url).netloc.lower()

@@ -1,5 +1,5 @@
 """Tests for topic fusion."""
-from crawler.classifier.fuse import Topic, fuse_topics
+from crawler.classifier.fuse import fuse_topics
 from crawler.classifier.heuristics import TopicCandidate
 from crawler.classifier.keyphrases import KeyphraseCandidate
 

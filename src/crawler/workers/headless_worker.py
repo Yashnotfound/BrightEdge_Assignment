@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from urllib.parse import urlsplit
 
 from crawler.api.schemas import ExtractResult
@@ -18,8 +19,51 @@ logger.setLevel(logging.INFO)
 async def _fetch_headless(url: str) -> tuple[str, int]:
     from playwright.async_api import async_playwright  # imported lazily
 
+    # Sparticuz/chromium recommended args. The longer list disables features
+    # that don't make sense in a headless Lambda environment (background sync,
+    # WebGL, audio, GPU). Without these, chromium child processes crash on
+    # startup with TargetClosedError.
+    chromium_args = [
+        "--allow-pre-commit-input",
+        "--disable-background-networking",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-breakpad",
+        "--disable-client-side-phishing-detection",
+        "--disable-component-extensions-with-background-pages",
+        "--disable-component-update",
+        "--disable-default-apps",
+        "--disable-dev-shm-usage",
+        "--disable-extensions",
+        "--disable-features=AudioServiceOutOfProcess,IsolateOrigins,site-per-process",
+        "--disable-hang-monitor",
+        "--disable-ipc-flooding-protection",
+        "--disable-popup-blocking",
+        "--disable-prompt-on-repost",
+        "--disable-renderer-backgrounding",
+        "--disable-sync",
+        "--force-color-profile=srgb",
+        "--metrics-recording-only",
+        "--no-first-run",
+        "--no-sandbox",
+        "--no-default-browser-check",
+        "--no-zygote",
+        "--password-store=basic",
+        "--use-mock-keychain",
+        "--hide-scrollbars",
+        "--mute-audio",
+        "--headless=new",
+    ]
+
+    executable = os.environ.get("CHROMIUM_EXECUTABLE")
+    if not executable:
+        # The headless image bakes this env var via Dockerfile ENV directive;
+        # missing it means we'd silently fall back to playwright's bundled
+        # browser (which isn't installed) and crash deep inside launch().
+        raise RuntimeError("CHROMIUM_EXECUTABLE env var is required")
+
     async with async_playwright() as p:
-        browser = await p.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
+        browser = await p.chromium.launch(executable_path=executable, args=chromium_args)
         try:
             context = await browser.new_context(
                 user_agent=(
@@ -30,7 +74,7 @@ async def _fetch_headless(url: str) -> tuple[str, int]:
                 locale="en-US",
             )
             page = await context.new_page()
-            response = await page.goto(url, wait_until="networkidle", timeout=20000)
+            response = await page.goto(url, wait_until="domcontentloaded", timeout=10000)
             html = await page.content()
             status = response.status if response else 200
             return html, status

@@ -11,10 +11,8 @@ Parameters:
 
 Globals:
   Function:
-    Runtime: python3.12
     Timeout: 30
     MemorySize: 1024
-    Architectures: [x86_64]
     Environment:
       Variables:
         LOG_LEVEL: INFO
@@ -24,7 +22,9 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: brightedge-crawler-api
-      CodeUri: ../
+      Runtime: python3.12
+      Architectures: [arm64]
+      CodeUri: ../src/
       Handler: crawler.api.main.handler
       MemorySize: 2048
       Timeout: 28
@@ -137,11 +137,16 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: brightedge-crawler-static-worker
-      CodeUri: ../
+      Runtime: python3.12
+      Architectures: [arm64]
+      CodeUri: ../src/
       Handler: crawler.workers.static_worker.handler
       MemorySize: 1024
       Timeout: 60
-      ReservedConcurrentExecutions: 20
+      # ReservedConcurrentExecutions: 20  # uncomment once account quota is raised
+      # New AWS accounts have a 10-concurrent quota AND a 10-minimum unreserved
+      # constraint, so any reservation is rejected. SQS BatchSize: 5 still
+      # caps inflight work per Lambda invocation.
       Environment:
         Variables:
           PAGES_TABLE: !Ref PagesTable
@@ -171,12 +176,17 @@ Resources:
       FunctionName: brightedge-crawler-headless-worker
       PackageType: Image
       ImageUri: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/brightedge-headless:latest"
+      # sparticuz/chromium only ships x86_64 binaries, so this function
+      # overrides the stack's default arm64 architecture.
+      Architectures: [x86_64]
       MemorySize: 3008
       Timeout: 60
       Environment:
         Variables:
           PAGES_TABLE: !Ref PagesTable
           RAW_HTML_BUCKET: !Ref RawHtmlBucket
+          PLAYWRIGHT_BROWSERS_PATH: /opt/ms-playwright
+          HOME: /tmp
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref PagesTable }
         - S3CrudPolicy: { BucketName: !Ref RawHtmlBucket }

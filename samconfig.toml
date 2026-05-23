@@ -5,7 +5,7 @@ stack_name = "brightedge-crawler"
 
 [default.build.parameters]
 cached = true
-parallel = true
+parallel = false
 
 [default.deploy.parameters]
 region = "us-east-1"

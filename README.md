@@ -3,10 +3,12 @@
 A URL-to-topics service: given any URL, returns metadata (title, description,
 OpenGraph, JSON-LD, body text, language) and a ranked list of topics.
 
-**Live demo:** https://<your-api-id>.execute-api.us-east-1.amazonaws.com/
-**OpenAPI / Swagger UI:** https://<your-api-id>.execute-api.us-east-1.amazonaws.com/docs
+**Live demo:** _URL and API key are shared in the submission email to BrightEdge._
+**OpenAPI / Swagger UI:** _at `/docs` on the same URL._
 
-> The demo URL will be inserted here after the SAM stack is deployed.
+> Since this is a public repo, the deployed URL and Bearer token are not
+> published here. Reviewers: see the submission email for the demo URL and
+> the API key. Without the key, all data endpoints return `401`.
 
 ## Submission contents
 
@@ -19,28 +21,36 @@ OpenGraph, JSON-LD, body text, language) and a ranked list of topics.
 ## Quick reference — the three test URLs
 
 ```bash
-API=https://<your-api-id>.execute-api.us-east-1.amazonaws.com
+# Set both from the submission email
+API=https://<api-id>.execute-api.us-east-1.amazonaws.com
+KEY=<bearer-token-from-submission-email>
+
+AUTH="-H \"Authorization: Bearer $KEY\""
+JSON='-H "Content-Type: application/json"'
 
 # 1. Amazon (anti-bot — uses headless fallback or fixture mode)
-curl -X POST "$API/extract" -H 'Content-Type: application/json' -d '{
+curl -X POST "$API/extract" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d '{
   "url":"http://www.amazon.com/Cuisinart-CPT-122-Compact-2-SliceToaster/dp/B009GQ034C/ref=sr_1_1?s=kitchen&ie=UTF8&qid=1431620315&sr=1-1&keywords=toaster"
 }' | jq
 
 # Fixture fallback (saved response, see "Anti-bot" below):
-curl -X POST "$API/extract?fixture=1" -H 'Content-Type: application/json' -d '{
+curl -X POST "$API/extract?fixture=1" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d '{
   "url":"http://www.amazon.com/Cuisinart-CPT-122-Compact-2-SliceToaster/dp/B009GQ034C/"
 }' | jq
 
 # 2. REI blog (clean static fetch)
-curl -X POST "$API/extract" -H 'Content-Type: application/json' -d '{
+curl -X POST "$API/extract" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d '{
   "url":"http://blog.rei.com/camp/how-to-introduce-your-indoorsy-friend-to-the-outdoors/"
 }' | jq
 
 # 3. CNN tech article (clean static fetch)
-curl -X POST "$API/extract" -H 'Content-Type: application/json' -d '{
+curl -X POST "$API/extract" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d '{
   "url":"https://www.cnn.com/2025/09/23/tech/google-study-90-percent-tech-jobs-ai"
 }' | jq
 ```
+
+The web form at `/` has a password field for the key — paste it once and
+the browser remembers it via `localStorage` for subsequent extractions.
 
 ## Architecture (live system)
 
@@ -64,6 +74,23 @@ flowchart LR
 - **Sync path:** `POST /extract` — single URL, static fetch, escalate to headless if confidence < 0.5.
 - **Async path:** `POST /batch` → SQS → static workers → headless escalation → `GET /jobs/{id}`.
 - **Read cache:** `GET /pages?url=…` — last cached extraction from DynamoDB.
+
+## Authentication
+
+The deployed API requires `Authorization: Bearer <key>` on all data endpoints
+(`/extract`, `/batch`, `/jobs/{id}`, `/pages`, `/pages/{url_hash}`). This
+protects the public-repo deployment from abuse — the URL and key are shared
+only with BrightEdge via the submission email.
+
+Open endpoints (no auth required): `/`, `/health`, `/docs`, `/openapi.json`.
+
+**Local development mode:** when the `API_KEY` env var is unset (its default
+during local `uvicorn` runs and `pytest` runs), the dependency is a no-op and
+all endpoints are unauthenticated. This keeps the dev loop friction-free.
+
+Constant-time comparison via `hmac.compare_digest` prevents timing attacks.
+401 responses include the RFC 6750-compliant `WWW-Authenticate: Bearer`
+header. See [`src/crawler/api/auth.py`](src/crawler/api/auth.py).
 
 ## How topic classification works
 
@@ -106,31 +133,47 @@ python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 
-# Tests
+# Tests (87 passing)
 pytest
 
-# Run locally
+# Run locally — no API key required when API_KEY env var is unset
 uvicorn crawler.api.main:app --reload --port 8000
 open http://localhost:8000/
+
+# Run locally WITH auth enforced (matches the deployed behavior)
+API_KEY="any-secret-you-pick" uvicorn crawler.api.main:app --port 8000
+# Then send: curl -H 'Authorization: Bearer any-secret-you-pick' …
 ```
 
 ## Deployment
 
 ```bash
-# Requires AWS credentials and SAM CLI
-./scripts/deploy.sh
+# Requires AWS credentials and SAM CLI. Generate a key for this deployment;
+# you'll share this with reviewers in the submission email.
+export API_KEY="$(openssl rand -hex 32)"
+echo "Save this key — it will only be shown once: $API_KEY"
 
-# Smoke-test the deployed stack
+sam build --template infra/template.yaml
+sam deploy --template-file .aws-sam/build/template.yaml \
+  --config-file ../samconfig.toml \
+  --parameter-overrides "ApiKey=$API_KEY"
+
+# Smoke-test the deployed stack (set API_KEY in the env first)
 ./scripts/smoke.sh
 ```
 
 The deploy provisions:
 - 3 Lambda functions (API, static-worker, headless-worker)
-- HTTP API Gateway
+- HTTP API Gateway with Bearer-token auth at the application layer
 - SQS queue + DLQ
 - 2 DynamoDB tables (Pages with `by-domain` GSI; Jobs)
 - 2 S3 buckets (raw HTML with lifecycle to Glacier; jobs)
 - IAM roles + policies (least-privilege per function)
+
+To re-roll the API key after deploy:
+```bash
+sam deploy --parameter-overrides "ApiKey=$(openssl rand -hex 32)"
+```
 
 ## AI tools used
 

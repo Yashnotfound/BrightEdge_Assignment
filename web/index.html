@@ -21,6 +21,11 @@ a { color: #0366d6; }
   Also see <a href="/docs">/docs</a> for the Swagger UI.
 </p>
 <div class="row">
+  <label class="muted">
+    <input type="checkbox" id="fixture"> Fixture mode (returns saved Amazon response — useful when anti-bot blocks live fetch)
+  </label>
+</div>
+<div class="row">
   <input id="url" type="url" placeholder="https://www.example.com/article" value="">
 </div>
 <div class="row">
@@ -37,18 +42,20 @@ const status = document.getElementById('status');
 
 btn.addEventListener('click', async () => {
   if (!url.value) return;
+  const useFixture = document.getElementById('fixture').checked;
   status.textContent = 'fetching...';
   out.textContent = '';
   const t0 = performance.now();
   try {
-    const r = await fetch('/extract', {
+    const qs = useFixture ? '?fixture=1' : '';
+    const r = await fetch('/extract' + qs, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({url: url.value})
     });
     const data = await r.json();
     const dt = (performance.now() - t0).toFixed(0);
-    status.textContent = `${r.status} in ${dt}ms`;
+    status.textContent = `${r.status} in ${dt}ms${useFixture ? ' (FIXTURE)' : ''}`;
     out.textContent = JSON.stringify(data, null, 2);
   } catch (e) {
     status.textContent = 'error';

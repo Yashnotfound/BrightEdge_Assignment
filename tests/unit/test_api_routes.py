@@ -133,3 +133,40 @@ def test_jobs_get_returns_404_for_unknown(monkeypatch):
     client = TestClient(app)
     response = client.get("/jobs/does-not-exist")
     assert response.status_code == 404
+
+
+def test_extract_fixture_mode_amazon():
+    client = TestClient(app)
+    response = client.post(
+        "/extract?fixture=1",
+        json={"url": "http://www.amazon.com/Cuisinart-CPT-122-Compact-2-SliceToaster/dp/B009GQ034C/"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["fetcher_used"] == "fixture"
+    assert "Cuisinart" in data["title"]
+    assert any(t["label"] == "toaster" for t in data["topics"])
+    assert any("fixture_mode" in e for e in data["errors"])
+
+
+def test_extract_fixture_mode_ignored_for_non_amazon(monkeypatch):
+    """Fixture mode only triggers for the Amazon test URL."""
+    fake = ExtractResult(
+        url="http://example.com",
+        url_hash="c" * 64,
+        fetched_at=datetime.now(UTC),
+        fetcher_used="static",
+        http_status=200,
+    )
+    monkeypatch.setattr(
+        "crawler.api.routes.extract_pipeline",
+        AsyncMock(return_value=(fake, "<html></html>")),
+    )
+
+    client = TestClient(app)
+    response = client.post(
+        "/extract?fixture=1",
+        json={"url": "http://example.com/not-amazon"},
+    )
+    assert response.status_code == 200
+    assert response.json()["fetcher_used"] == "static"  # fixture didn't trigger

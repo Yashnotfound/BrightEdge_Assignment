@@ -44,7 +44,14 @@ def _persist(result: ExtractResult, html: str | None) -> None:
 
 
 @router.post("/extract", response_model=ExtractResult, tags=["extract"])
-async def extract(req: ExtractRequest) -> ExtractResult:
+async def extract(
+    req: ExtractRequest,
+    fixture: int = Query(0, ge=0, le=1, description="If 1 and URL matches Amazon test URL, returns saved fixture"),
+) -> ExtractResult:
+    if fixture == 1 and "amazon.com" in req.url.lower() and "cuisinart" in req.url.lower():
+        from crawler.fixtures import amazon_toaster
+        return amazon_toaster()
+
     settings = _settings()
     try:
         returned = await extract_pipeline(req.url, return_html=True)

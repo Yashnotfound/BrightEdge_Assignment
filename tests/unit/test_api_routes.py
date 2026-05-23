@@ -52,3 +52,29 @@ def test_index_serves_html():
     assert response.status_code == 200
     assert "BrightEdge Crawler" in response.text
     assert "<!DOCTYPE html>" in response.text or "<h1>" in response.text
+
+
+def test_pages_by_url_returns_404_for_unknown(monkeypatch):
+    # Monkeypatch the PagesRepo.get to return None (simulates not found)
+    from crawler.storage.dynamo import PagesRepo
+    monkeypatch.setattr(PagesRepo, "get", lambda self, *, url_hash: None)
+    client = TestClient(app)
+    response = client.get("/pages?url=http://does-not-exist.example/")
+    assert response.status_code == 404
+
+
+def test_pages_by_hash_returns_result(monkeypatch):
+    from crawler.storage.dynamo import PagesRepo
+    fake = ExtractResult(
+        url="http://example.com",
+        url_hash="b" * 64,
+        fetched_at=datetime.now(UTC),
+        fetcher_used="static",
+        http_status=200,
+        title="Cached",
+    )
+    monkeypatch.setattr(PagesRepo, "get", lambda self, *, url_hash: fake)
+    client = TestClient(app)
+    response = client.get("/pages/" + ("b" * 64))
+    assert response.status_code == 200
+    assert response.json()["title"] == "Cached"

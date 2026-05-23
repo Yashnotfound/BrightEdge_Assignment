@@ -18,10 +18,16 @@ from crawler.storage.hashing import url_hash
 _BODY_TEXT_LIMIT = 50_000  # cap stored body to 50KB
 
 
-async def extract_pipeline(url: str) -> ExtractResult:
+async def extract_pipeline(url: str, *, return_html: bool = False):
+    """Return ExtractResult by default; (ExtractResult, raw_html) if return_html=True."""
     fetched = await fetch(url)
-    return _process(url=url, html=fetched.html, http_status=fetched.http_status,
-                    content_type=fetched.content_type, fetcher_used="static")
+    result = _process(
+        url=url, html=fetched.html, http_status=fetched.http_status,
+        content_type=fetched.content_type, fetcher_used="static",
+    )
+    if return_html:
+        return result, fetched.html
+    return result
 
 
 def process_html(*, url: str, html: str, http_status: int, content_type: str,

@@ -7,9 +7,16 @@ from typing import Any
 from bs4 import BeautifulSoup
 
 
-def extract_jsonld(html: str) -> list[dict[str, Any]]:
-    """Return all valid JSON-LD blocks as a flat list of dicts."""
-    soup = BeautifulSoup(html, "lxml")
+def extract_jsonld(
+    html: str, *, soup: BeautifulSoup | None = None,
+) -> list[dict[str, Any]]:
+    """Return all valid JSON-LD blocks as a flat list of dicts.
+
+    Pass `soup` to reuse an already-parsed BeautifulSoup tree (the pipeline
+    parses once and shares it across meta + jsonld extractors).
+    """
+    if soup is None:
+        soup = BeautifulSoup(html, "lxml")
     blocks: list[dict[str, Any]] = []
     for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
         text = (script.string or script.get_text() or "").strip()

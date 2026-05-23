@@ -14,15 +14,28 @@ class MetaTags:
     keywords: list[str] = field(default_factory=list)
     open_graph: dict[str, str] = field(default_factory=dict)
     twitter_card: dict[str, str] = field(default_factory=dict)
+    h1: list[str] = field(default_factory=list)
     raw_meta: dict[str, str] = field(default_factory=dict)
 
 
-def extract_meta(html: str) -> MetaTags:
-    soup = BeautifulSoup(html, "lxml")
+def extract_meta(html: str, *, soup: BeautifulSoup | None = None) -> MetaTags:
+    """Parse meta/OG/Twitter/canonical/h1 fields from HTML.
+
+    Pass `soup` to reuse an already-parsed BeautifulSoup tree and avoid the
+    second parse — both `extract_meta` and `extract_jsonld` accept this and
+    the pipeline parses once.
+    """
+    if soup is None:
+        soup = BeautifulSoup(html, "lxml")
     meta = MetaTags()
 
     if soup.title and soup.title.string:
         meta.title = soup.title.string.strip()
+
+    for h1_tag in soup.find_all("h1", limit=3):
+        text = h1_tag.get_text(" ", strip=True)
+        if text:
+            meta.h1.append(text)
 
     for tag in soup.find_all("meta"):
         name = (tag.get("name") or "").lower().strip()

@@ -1,0 +1,308 @@
+# Labeled fixtures for classifier accuracy evaluation.
+#
+# Each case references a fixture HTML file in tests/fixtures/ and lists the
+# topics a human reviewer would expect.
+#
+# expected_top_3: the labels we expect to see at ranks 1-3. Used to compute
+#                 top-1 hit and top-3 hit rate.
+# relevant:       a broader set used to compute MRR (rank of first relevant
+#                 label among the actual top-10).
+#
+# Matching is case-insensitive with token-set intersection plus substring
+# fallback, so "outdoor" matches "outdoors" and "kitchen" matches
+# "kitchen toaster". See _matches() in test_topic_accuracy.py.
+#
+# Non-English fixtures use source-language labels (matcher is language-agnostic).
+
+cases:
+  - id: amazon_toaster
+    url: "http://www.amazon.com/Cuisinart-CPT-122-Compact-2-SliceToaster/dp/B009GQ034C/"
+    fixture: amazon_toaster.html
+    expected_top_3:
+      - toaster
+      - kitchen
+      - cuisinart
+    relevant:
+      - toaster
+      - kitchen
+      - cuisinart
+      - small appliance
+      - kitchen appliance
+      - kitchen toaster
+
+  - id: cnn_tech_ai
+    url: "https://www.cnn.com/2025/09/23/tech/google-study-90-percent-tech-jobs-ai"
+    fixture: cnn_tech.html
+    expected_top_3:
+      - artificial intelligence
+      - tech industry
+      - google
+    relevant:
+      - artificial intelligence
+      - ai
+      - tech industry
+      - tech
+      - technology
+      - google
+      - software development
+
+  - id: rei_outdoors
+    url: "http://blog.rei.com/camp/how-to-introduce-your-indoorsy-friend-to-the-outdoors/"
+    fixture: rei_outdoors.html
+    expected_top_3:
+      - camping
+      - outdoors
+      - hiking
+    relevant:
+      - camping
+      - outdoors
+      - hiking
+      - nature
+      - beginners
+      - outdoor
+
+  - id: allrecipes_chocolate_cake
+    url: "https://www.allrecipes.com/recipe/17981/one-bowl-chocolate-cake-iii/"
+    fixture: allrecipes_chocolate_cake.html
+    expected_top_3:
+      - chocolate cake
+      - recipe
+      - baking
+    relevant:
+      - chocolate cake
+      - cake
+      - chocolate
+      - recipe
+      - baking
+      - dessert
+      - frosting
+
+  - id: bbcgoodfood_easy_chocolate_cake
+    url: "https://www.bbcgoodfood.com/recipes/easy-chocolate-cake"
+    fixture: bbcgoodfood_easy_chocolate_cake.html
+    expected_top_3:
+      - chocolate cake
+      - recipe
+      - baking
+    relevant:
+      - chocolate cake
+      - cake
+      - chocolate
+      - recipe
+      - baking
+      - dessert
+      - buttercream
+
+  - id: bbcgoodfood_chicken_curry
+    url: "https://www.bbcgoodfood.com/recipes/easy-chicken-curry"
+    fixture: bbcgoodfood_chicken_curry.html
+    expected_top_3:
+      - chicken curry
+      - recipe
+      - curry
+    relevant:
+      - chicken curry
+      - curry
+      - chicken
+      - recipe
+      - indian
+      - dinner
+
+  - id: arxiv_clip
+    url: "https://arxiv.org/abs/2103.00020"
+    fixture: arxiv_clip.html
+    expected_top_3:
+      - computer vision
+      - machine learning
+      - natural language
+    relevant:
+      - computer vision
+      - machine learning
+      - natural language
+      - natural language processing
+      - deep learning
+      - neural network
+      - computer science
+      - visual models
+
+  - id: github_python_cpython
+    url: "https://github.com/python/cpython"
+    fixture: github_python_cpython.html
+    expected_top_3:
+      - python
+      - programming
+      - github
+    relevant:
+      - python
+      - programming language
+      - programming
+      - github
+      - cpython
+      - software
+      - open source
+
+  - id: github_torvalds_linux
+    url: "https://github.com/torvalds/linux"
+    fixture: github_torvalds_linux.html
+    expected_top_3:
+      - linux
+      - kernel
+      - github
+    relevant:
+      - linux
+      - kernel
+      - linux kernel
+      - github
+      - operating system
+      - torvalds
+
+  - id: mdn_javascript
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript"
+    fixture: mdn_javascript.html
+    expected_top_3:
+      - javascript
+      - programming
+      - web
+    relevant:
+      - javascript
+      - programming
+      - programming language
+      - web
+      - web development
+      - scripting
+
+  - id: stackoverflow_python_ternary
+    url: "https://stackoverflow.com/questions/394809/does-python-have-a-ternary-conditional-operator"
+    fixture: stackoverflow_python_ternary.html
+    expected_top_3:
+      - python
+      - ternary operator
+      - programming
+    relevant:
+      - python
+      - ternary operator
+      - ternary
+      - programming
+      - conditional
+      - operator
+      - stack overflow
+
+  - id: wikipedia_espresso_machine
+    url: "https://en.wikipedia.org/wiki/Espresso_machine"
+    fixture: wikipedia_espresso_machine.html
+    expected_top_3:
+      - espresso machine
+      - espresso
+      - coffee
+    relevant:
+      - espresso machine
+      - espresso
+      - coffee
+      - brewing
+      - lever
+      - boiler
+
+  - id: wikipedia_python_lang
+    url: "https://en.wikipedia.org/wiki/Python_(programming_language)"
+    fixture: wikipedia_python_lang.html
+    expected_top_3:
+      - python
+      - programming language
+      - programming
+    relevant:
+      - python
+      - programming language
+      - programming
+      - software
+      - computer science
+
+  - id: wikipedia_climate_change
+    url: "https://en.wikipedia.org/wiki/Climate_change"
+    fixture: wikipedia_climate_change.html
+    expected_top_3:
+      - climate change
+      - global warming
+      - environment
+    relevant:
+      - climate change
+      - global warming
+      - climate
+      - environment
+      - ipcc
+      - emissions
+
+  - id: wikipedia_photosynthesis
+    url: "https://en.wikipedia.org/wiki/Photosynthesis"
+    fixture: wikipedia_photosynthesis.html
+    expected_top_3:
+      - photosynthesis
+      - biology
+      - plants
+    relevant:
+      - photosynthesis
+      - plants
+      - biology
+      - chloroplast
+      - oxygen
+      - chlorophyll
+
+  - id: wikipedia_neural_network
+    url: "https://en.wikipedia.org/wiki/Neural_network_(machine_learning)"
+    fixture: wikipedia_neural_network.html
+    expected_top_3:
+      - neural network
+      - machine learning
+      - deep learning
+    relevant:
+      - neural network
+      - machine learning
+      - deep learning
+      - artificial intelligence
+      - ai
+      - artificial neural network
+
+  - id: wikipedia_de_einstein
+    url: "https://de.wikipedia.org/wiki/Albert_Einstein"
+    fixture: wikipedia_de_einstein.html
+    expected_top_3:
+      - albert einstein
+      - physik
+      - relativitätstheorie
+    relevant:
+      - albert einstein
+      - einstein
+      - physik
+      - physiker
+      - relativitätstheorie
+      - wissenschaft
+
+  - id: wikipedia_es_messi
+    url: "https://es.wikipedia.org/wiki/Lionel_Messi"
+    fixture: wikipedia_es_messi.html
+    expected_top_3:
+      - lionel messi
+      - fútbol
+      - barcelona
+    relevant:
+      - lionel messi
+      - messi
+      - fútbol
+      - futbol
+      - barcelona
+      - argentina
+      - fc barcelona
+
+  - id: wikipedia_fr_paris
+    url: "https://fr.wikipedia.org/wiki/Paris"
+    fixture: wikipedia_fr_paris.html
+    expected_top_3:
+      - paris
+      - france
+      - capitale
+    relevant:
+      - paris
+      - france
+      - ville
+      - capitale
+      - europe
+      - île-de-france

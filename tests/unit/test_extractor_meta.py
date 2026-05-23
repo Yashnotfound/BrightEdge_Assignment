@@ -50,6 +50,26 @@ def test_handles_missing_head():
     assert meta.description is None
 
 
+def test_extract_h1_single():
+    html = "<html><body><h1>Main Heading</h1></body></html>"
+    assert extract_meta(html).h1 == ["Main Heading"]
+
+
+def test_extract_h1_strips_nested_markup():
+    html = "<html><body><h1>Top <span>level</span> <strong>title</strong></h1></body></html>"
+    assert extract_meta(html).h1 == ["Top level title"]
+
+
+def test_extract_h1_limit_three():
+    html = "<html><body>" + "".join(f"<h1>H{i}</h1>" for i in range(5)) + "</body></html>"
+    assert extract_meta(html).h1 == ["H0", "H1", "H2"]
+
+
+def test_extract_h1_empty_when_absent():
+    html = "<html><body><p>No heading</p></body></html>"
+    assert extract_meta(html).h1 == []
+
+
 def test_rei_fixture_extracts_title(fixture_html):
     if "rei" not in fixture_html:
         return  # fixture optional in CI

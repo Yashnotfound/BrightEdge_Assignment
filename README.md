@@ -135,11 +135,11 @@ cd brightedge-crawler
 ```
 
 > **macOS note:** `scripts/setup.sh` clears the `UF_HIDDEN` filesystem flag
-> on `.venv/` after creating it. Without this, Python's `site.py` silently
-> skips the editable-install `.pth` file (it refuses to load `.pth` files
-> from hidden directories), and `import crawler` fails. The script handles
-> this transparently. If you skip the script and create `.venv` manually,
-> run `chflags -R nohidden .venv` once after `python3.12 -m venv .venv`.
+> on `.venv/` after creating it. Without this, the editable-install `.pth`
+> file is silently ignored when Python initializes site-packages, and
+> `import crawler` fails. The script handles this transparently. If you
+> skip the script and create `.venv` manually, run `chflags -R nohidden
+> .venv` once after `python3.12 -m venv .venv`.
 
 Then to run the server:
 

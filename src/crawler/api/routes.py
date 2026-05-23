@@ -1,14 +1,17 @@
 """HTTP routes."""
 from __future__ import annotations
 
+import json
+import uuid
 from urllib.parse import urlsplit
 
+import boto3
 from fastapi import APIRouter, HTTPException, Query
 
-from crawler.api.schemas import ExtractRequest, ExtractResult
+from crawler.api.schemas import BatchRequest, BatchResponse, ExtractRequest, ExtractResult, JobStatus
 from crawler.config import load_settings
 from crawler.pipeline import extract_pipeline
-from crawler.storage.dynamo import PagesRepo
+from crawler.storage.dynamo import JobsRepo, PagesRepo
 from crawler.storage.hashing import url_hash as _url_hash
 from crawler.storage.s3 import RawHtmlStore
 
@@ -73,3 +76,37 @@ def pages_by_hash(url_hash: str) -> ExtractResult:
     if not result:
         raise HTTPException(status_code=404, detail="not found")
     return result
+
+
+@router.post("/batch", response_model=BatchResponse, tags=["batch"])
+def batch(req: BatchRequest) -> BatchResponse:
+    s = _settings()
+    if not s.static_queue_url or not s.jobs_table:
+        raise HTTPException(status_code=503, detail="batch path not configured")
+
+    job_id = uuid.uuid4().hex
+    JobsRepo(table_name=s.jobs_table).create(job_id=job_id, total=len(req.urls))
+
+    sqs = boto3.client("sqs")
+    # Batches of up to 10 per SQS SendMessageBatch call
+    for chunk_start in range(0, len(req.urls), 10):
+        chunk = req.urls[chunk_start : chunk_start + 10]
+        entries = [
+            {
+                "Id": str(chunk_start + i),
+                "MessageBody": json.dumps({"url": url, "job_id": job_id}),
+            }
+            for i, url in enumerate(chunk)
+        ]
+        sqs.send_message_batch(QueueUrl=s.static_queue_url, Entries=entries)
+
+    return BatchResponse(job_id=job_id)
+
+
+@router.get("/jobs/{job_id}", response_model=JobStatus, tags=["batch"])
+def jobs_get(job_id: str) -> JobStatus:
+    s = _settings()
+    status = JobsRepo(table_name=s.jobs_table).get(job_id=job_id)
+    if not status:
+        raise HTTPException(status_code=404, detail="job not found")
+    return status

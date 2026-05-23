@@ -78,3 +78,58 @@ def test_pages_by_hash_returns_result(monkeypatch):
     response = client.get("/pages/" + ("b" * 64))
     assert response.status_code == 200
     assert response.json()["title"] == "Cached"
+
+
+def test_batch_returns_503_when_unconfigured(monkeypatch):
+    # Default settings (no queue url) → 503
+    monkeypatch.delenv("STATIC_QUEUE_URL", raising=False)
+    client = TestClient(app)
+    response = client.post("/batch", json={"urls": ["http://x.com"]})
+    assert response.status_code == 503
+
+
+def test_batch_enqueues_and_returns_job_id(monkeypatch):
+    """With moto SQS + DDB, /batch should create a job and enqueue."""
+    import boto3
+    from moto import mock_aws
+
+    with mock_aws():
+        sqs = boto3.client("sqs", region_name="us-east-1")
+        queue_url = sqs.create_queue(QueueName="test-queue")["QueueUrl"]
+        ddb = boto3.client("dynamodb", region_name="us-east-1")
+        ddb.create_table(
+            TableName="test-jobs",
+            AttributeDefinitions=[{"AttributeName": "job_id", "AttributeType": "S"}],
+            KeySchema=[{"AttributeName": "job_id", "KeyType": "HASH"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        monkeypatch.setenv("STATIC_QUEUE_URL", queue_url)
+        monkeypatch.setenv("JOBS_TABLE", "test-jobs")
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+
+        client = TestClient(app)
+        response = client.post(
+            "/batch",
+            json={"urls": ["http://a.com/x", "http://b.com/y"]},
+        )
+        assert response.status_code == 200
+        job_id = response.json()["job_id"]
+        assert len(job_id) == 32  # uuid4 hex
+
+        # Confirm messages were enqueued
+        msgs = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10)
+        assert len(msgs.get("Messages", [])) == 2
+
+        # /jobs/{id} should return the new job
+        status_resp = client.get(f"/jobs/{job_id}")
+        assert status_resp.status_code == 200
+        assert status_resp.json()["total"] == 2
+        assert status_resp.json()["status"] == "queued"
+
+
+def test_jobs_get_returns_404_for_unknown(monkeypatch):
+    from crawler.storage.dynamo import JobsRepo
+    monkeypatch.setattr(JobsRepo, "get", lambda self, *, job_id: None)
+    client = TestClient(app)
+    response = client.get("/jobs/does-not-exist")
+    assert response.status_code == 404

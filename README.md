@@ -160,20 +160,27 @@ pytest    # 87 passing
 
 ## Deployment
 
+Full runbook (cross-arch image build, account-quota gotchas,
+drift checks) is in **[`docs/deploy.md`](docs/deploy.md)**. Short version:
+
 ```bash
-# Requires AWS credentials and SAM CLI. Generate a key for this deployment;
-# you'll share this with reviewers in the submission email.
-export API_KEY="$(openssl rand -hex 32)"
+# Requires AWS CLI v2, SAM CLI ≥ 1.161, Docker w/ buildx, jq.
+# Generate a key for this deployment — you'll share this with reviewers.
+export AWS_PROFILE=brightedge-session     # MFA-backed session, see docs/deploy.md §1
+export API_KEY="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)"
 echo "Save this key — it will only be shown once: $API_KEY"
 
-sam build --template infra/template.yaml
-sam deploy --template-file .aws-sam/build/template.yaml \
-  --config-file ../samconfig.toml \
-  --parameter-overrides "ApiKey=$API_KEY"
+./scripts/deploy.sh
 
-# Smoke-test the deployed stack (set API_KEY in the env first)
+# Smoke-test the deployed stack (set API and KEY env vars first)
 ./scripts/smoke.sh
 ```
+
+`scripts/deploy.sh` orchestrates the two-track build (zip functions via
+SAM + headless container image via buildx), regenerates a skip-image
+template so SAM doesn't try to rebuild the container, deploys, then
+explicitly refreshes the Lambda image digest. See
+[`docs/deploy.md` §2](docs/deploy.md) for why each step is necessary.
 
 The deploy provisions:
 - 3 Lambda functions (API, static-worker, headless-worker)
@@ -185,7 +192,7 @@ The deploy provisions:
 
 To re-roll the API key after deploy:
 ```bash
-sam deploy --parameter-overrides "ApiKey=$(openssl rand -hex 32)"
+API_KEY="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)" ./scripts/deploy.sh
 ```
 
 ## AI tools used

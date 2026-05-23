@@ -1,20 +1,39 @@
-FROM public.ecr.aws/lambda/python:3.12
+FROM --platform=linux/amd64 public.ecr.aws/lambda/python:3.12
 
-# System deps for chromium
-RUN dnf install -y \
-    nss nspr atk at-spi2-atk cups-libs dbus-libs libdrm libxkbcommon \
-    libXcomposite libXdamage libXfixes libXrandr mesa-libgbm pango \
-    cairo alsa-lib && dnf clean all
+# Tooling for extracting sparticuz/chromium's brotli-compressed pack;
+# fontconfig + dejavu fonts so chromium can render text without
+# "Fontconfig error: Cannot load default config file" warnings.
+RUN dnf install -y brotli tar gzip fontconfig dejavu-sans-fonts && dnf clean all
 
-# Install Python deps
+# Python deps (playwright client only — no chromium install; we use sparticuz)
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt playwright==1.49.0
 
-# Install chromium browser
-RUN playwright install chromium
+# Sparticuz/chromium — a chromium build hardened for AWS Lambda's runtime
+# constraints. Ships as a brotli-compressed pack containing the chromium
+# binary, shared libs for Amazon Linux 2023, swiftshader (software
+# renderer), and fonts. Layout shipped by v131.0.0 release:
+#   chromium.br, al2023.tar.br, swiftshader.tar.br, fonts.tar.br
+ARG CHROMIUM_VERSION=131.0.0
+RUN mkdir -p /opt/chromium /tmp/cpack && \
+    cd /tmp/cpack && \
+    curl -fL "https://github.com/Sparticuz/chromium/releases/download/v${CHROMIUM_VERSION}/chromium-v${CHROMIUM_VERSION}-pack.tar" -o pack.tar && \
+    tar -xf pack.tar && \
+    brotli -d chromium.br -o /opt/chromium/chromium && \
+    chmod +x /opt/chromium/chromium && \
+    mkdir -p /opt/chromium/lib /opt/chromium/fonts && \
+    brotli -d al2023.tar.br -o al2023.tar && tar -xf al2023.tar --strip-components=1 -C /opt/chromium/lib && \
+    brotli -d swiftshader.tar.br -o swiftshader.tar && tar -xf swiftshader.tar -C /opt/chromium && \
+    brotli -d fonts.tar.br -o fonts.tar && tar -xf fonts.tar --strip-components=1 -C /opt/chromium/fonts && \
+    rm -rf /tmp/cpack
 
-# Application source
+# Chromium needs its bundled libs on the loader path. /opt/chromium holds
+# the swiftshader libs (libGLESv2.so, libEGL.so) which chromium loads via
+# RPATH-less dlopen; /opt/chromium/lib holds the AL2023 system libs
+# (libnss, libexpat, etc.) bundled by sparticuz.
+ENV LD_LIBRARY_PATH=/opt/chromium:/opt/chromium/lib:${LD_LIBRARY_PATH}
+ENV CHROMIUM_EXECUTABLE=/opt/chromium/chromium
+
 COPY src/ ${LAMBDA_TASK_ROOT}/
 
-# Lambda will invoke this handler
 CMD ["crawler.workers.headless_worker.handler"]

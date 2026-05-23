@@ -11,7 +11,7 @@ direct-invoked and runs Playwright/chromium inside a container image.
 | File | One-liner |
 |---|---|
 | `static_worker.py` | SQS-triggered batch processor; calls `pipeline.extract_pipeline`, persists to S3+DDB, bumps job counters. |
-| `headless_worker.py` | Direct-invoke (`{url, persist?}`); fetches HTML via Playwright then runs `pipeline.process_html`. |
+| `headless_worker.py` | Direct-invoke (`{url, persist?}`); fetches HTML via Playwright pointed at sparticuz/chromium (`CHROMIUM_EXECUTABLE` env var = `/opt/chromium/chromium`), Lambda-hardened launch flags, `wait_until="domcontentloaded"`, 10s page-load timeout, then runs `pipeline.process_html`. |
 | `__init__.py` | Empty marker. |
 
 ## Public API
@@ -65,5 +65,8 @@ that `process_html` is fed the right arguments.
 ## Deployment
 
 - **static_worker**: regular zip-package Lambda; trigger = `STATIC_QUEUE_URL`.
-- **headless_worker**: container-image Lambda (`infra/Dockerfile.headless`);
+- **headless_worker**: container-image Lambda (`infra/headless.Dockerfile`);
   ARN exposed to the API + static-worker via `HEADLESS_FUNCTION_NAME` env var.
+  Requires `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` and `HOME=/tmp`
+  in the Lambda environment so chromium can find the binary and write
+  scratch state from the non-root runtime user.

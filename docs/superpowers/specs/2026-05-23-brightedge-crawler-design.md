@@ -102,7 +102,8 @@ crawler/
 | `/extract` | POST | Body `{url}`. Synchronous: fetch → extract → classify → respond. 25s timeout. |
 | `/batch` | POST | Body `{urls: [...]}` (max 1000). Returns `{job_id}`. Fans out SQS messages. |
 | `/jobs/{id}` | GET | Returns `{status, total, succeeded, failed, manifest_s3_uri?}`. |
-| `/pages/{url_hash}` | GET | Returns last cached extraction. |
+| `/pages` | GET | Query: `?url=…`. Server hashes URL, returns last cached extraction. Primary public lookup. |
+| `/pages/{url_hash}` | GET | Direct hash lookup (internal / optimized clients that already hold the hash). |
 | `/docs` | GET | FastAPI Swagger UI. |
 | `/` | GET | Minimal HTML form for reviewers. |
 
@@ -194,10 +195,15 @@ PK url_hash        SK version    url, domain, fetched_at, http_status,
                                  canonical_url, og {…}, jsonld_present (bool),
                                  topics [{label, score, sources}],
                                  extraction_confidence, s3_html_uri,
-                                 schema_version
+                                 s3_jsonld_uri, schema_version
 GSI1  domain       fetched_at    (range scans per domain)
 GSI2  topic_label  score         (top pages per topic — sparse)
 ```
+
+**Field split (DDB vs S3):** DDB items are kept small (<8 KB) to stay efficient. Heavy fields live in S3:
+
+- DDB stores: small fixed metadata (title, description, OG, topics, confidence), pointers (`s3_html_uri`, `s3_jsonld_uri`), and a `jsonld_present` boolean for cheap "does this page have structured data?" filtering.
+- S3 stores: raw HTML (`{url_hash}.html.zst`) and the parsed JSON-LD blob (`{url_hash}.jsonld.json`). The `/extract` API response inlines JSON-LD by fetching it from S3 on read; the `/pages` cached lookup also inlines it.
 
 **DynamoDB `Frontier`** — URL queue & dedupe.
 
@@ -288,25 +294,46 @@ s3://crawler-prod/
 
 ### 7.8 Cost model @ 5B URL/month
 
-| Component | Monthly |
-|---|---|
-| Lambda — static workers (~90% traffic) | ~$3K |
-| Lambda — headless workers (~10%) | ~$15K |
-| DynamoDB Pages writes + reads | ~$8K |
-| SQS | ~$0.2K |
-| S3 raw (with Glacier lifecycle) | ~$2K amortized |
-| S3 Parquet + Athena scans | ~$1K |
-| ElastiCache (cache.r6g.large × 2) | ~$0.5K |
-| CloudWatch + X-Ray | ~$0.5K |
-| **Total** | **~$30K/mo ≈ $0.006/URL ≈ $6 per 1k URLs** |
+**Assumptions:** static worker 500ms avg @ 512 MB; headless worker 2s avg @ 2 GB; DDB items 2 KB; 10% headless escalation; on-demand DDB; us-east-1 pricing as of 2026-05.
 
-**Cost levers (ranked by impact):**
+**Unoptimized (lift-and-shift of the PoC topology to scale):**
 
-1. Keep headless escalation < 10%.
-2. ETag/304 short-circuit on re-crawls.
-3. zstd over gzip on raw HTML (-30% storage).
-4. Lambda Savings Plans.
-5. DDB on-demand → provisioned with auto-scaling once volume is predictable.
+| Component | Calc | Monthly |
+|---|---|---|
+| Lambda — static (4.5B × 0.5s × 0.5 GB) | 1.13B GB-s × $0.0000167 + 4.5B × $0.20/M req | ~$19K + ~$0.9K = **~$20K** |
+| Lambda — headless (500M × 2s × 2 GB) | 2B GB-s × $0.0000167 + 500M × $0.20/M req | ~$33K + ~$0.1K = **~$33K** |
+| DynamoDB writes (5B × 2 WRU) | 10B WRU × $1.25/M | **~$13K** |
+| DynamoDB reads (300M @ 4 KB strongly consistent) | 75M RCU × $0.25/M | **<$0.1K** |
+| SQS (5B sends + 5B receives + DLQ) | 10B × $0.40/M | **~$4K** |
+| S3 raw (300 TB Standard month 1, lifecycle to Glacier) | Glacier-amortized over 90d retention | **~$2K** |
+| S3 Parquet + Athena scans | ~10 TB scanned/mo × $5/TB | **~$1K** |
+| ElastiCache (cache.r6g.large × 2, multi-AZ) | $0.252/hr × 2 × 730 | **~$0.5K** |
+| CloudWatch metrics + Logs + X-Ray | typical at this volume | **~$1K** |
+| Data transfer (assume 5% egress to /pages clients) | rough | **~$0.5K** |
+| **Total (unoptimized)** | | **~$75K/mo ≈ $15 per 1k URLs** |
+
+**Optimized (Phase 2/3 levers applied):**
+
+| Lever | Saving | Result |
+|---|---|---|
+| Headless on Fargate with high concurrency (Phase 2) | Headless $33K → $14K | -$19K |
+| Reduce escalation rate to 5% via better static heuristics | Headless $14K → $7K | -$7K |
+| Lambda Savings Plans (1-yr commit, ~17% off compute) | Static $20K → $17K | -$3K |
+| DDB provisioned with auto-scaling once predictable | DDB $13K → $8K | -$5K |
+| ETag/304 short-circuit on re-crawls (assume 40% repeat traffic) | Static & DDB writes -40% on repeats | -$8K |
+| zstd over gzip raw HTML (-30%) | S3 raw $2K → $1.4K | -$0.6K |
+| **Total (optimized)** | | **~$33K/mo ≈ $7 per 1k URLs** |
+
+**Cost levers (ranked by impact, see table above for $):**
+
+1. **Headless tier migration to Fargate** at sustained volume — biggest single win.
+2. **Keep escalation rate < 10%** (target 5% once domain-specific tuning lands).
+3. **ETag/304 short-circuit** on re-crawls — huge on repeat passes.
+4. **DDB on-demand → provisioned** once volume is predictable.
+5. **Lambda Savings Plans** for the static tier (which stays on Lambda).
+6. **zstd over gzip** for raw HTML storage.
+
+The PoC demo runs the unoptimized all-Lambda topology because it scales to zero (free when idle). The Phase 2 cost-optimization work is the bridge to the $7/1k production target.
 
 ## 8. Part 3 — PoC plan
 
@@ -397,7 +424,8 @@ Track B can't fully validate until Track A's load test ships; Track B's hardest 
 - No CAPTCHA-page false positives on the 3 test URLs.
 
 **Cost (sanity check):**
-- Estimated `$/1k URLs` on demo within 2× of Part 2 projection (< $12/1k at PoC scale).
+- Headless escalation rate on the 3 test URLs matches the < 10% design target (Amazon is expected to escalate; REI and CNN shouldn't).
+- Demo per-URL cost is dominated by Lambda fixed overhead and won't match the production projection at low volume, but the **scaled-up extrapolation** (compute-seconds per URL × projected 5B URLs/mo) should land within 2× of the Part 2 optimized projection ($7/1k → < $14/1k extrapolated).
 
 ### 8.6 Quality gates for the production team (post-PoC)
 

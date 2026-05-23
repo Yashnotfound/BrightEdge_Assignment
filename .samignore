@@ -1,0 +1,11 @@
+.venv/
+.git/
+docs/
+tests/
+.aws-sam/
+.ruff_cache/
+.pytest_cache/
+__pycache__/
+*.pyc
+.ckignore
+*.pdf

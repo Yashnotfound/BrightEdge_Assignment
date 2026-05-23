@@ -19,6 +19,8 @@ Resources:
       FunctionName: brightedge-crawler-api
       CodeUri: ../
       Handler: crawler.api.main.handler
+      MemorySize: 2048
+      Timeout: 28
       Events:
         ApiRoot:
           Type: HttpApi

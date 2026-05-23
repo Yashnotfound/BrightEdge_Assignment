@@ -52,3 +52,6 @@ BREDG-*.pdf
 
 # Notebooks
 .ipynb_checkpoints/
+
+#local data
+.local_data/

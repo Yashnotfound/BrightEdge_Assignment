@@ -1,5 +1,4 @@
 """Tests for URL normalization and hashing."""
-import pytest
 
 from crawler.storage.hashing import normalize_url, url_hash
 

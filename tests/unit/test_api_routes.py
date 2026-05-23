@@ -44,3 +44,11 @@ def test_extract_endpoint_validates_url():
     client = TestClient(app)
     response = client.post("/extract", json={})
     assert response.status_code == 422
+
+
+def test_index_serves_html():
+    client = TestClient(app)
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "BrightEdge Crawler" in response.text
+    assert "<!DOCTYPE html>" in response.text or "<h1>" in response.text

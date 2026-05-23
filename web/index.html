@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BrightEdge Crawler — Demo</title>
+<style>
+body { font-family: -apple-system, system-ui, sans-serif; max-width: 920px; margin: 40px auto; padding: 0 16px; color: #222; }
+h1 { font-size: 24px; }
+input[type=url] { width: 100%; padding: 10px; font-size: 14px; box-sizing: border-box; }
+button { padding: 10px 20px; font-size: 14px; margin-top: 8px; cursor: pointer; }
+pre { background: #f4f4f4; padding: 12px; border-radius: 6px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; }
+.muted { color: #666; font-size: 13px; }
+.row { margin-bottom: 12px; }
+a { color: #0366d6; }
+</style>
+</head>
+<body>
+<h1>BrightEdge Crawler</h1>
+<p class="muted">
+  Enter a URL to extract title, description, structured data, and ranked topics.
+  Also see <a href="/docs">/docs</a> for the Swagger UI.
+</p>
+<div class="row">
+  <input id="url" type="url" placeholder="https://www.example.com/article" value="">
+</div>
+<div class="row">
+  <button id="btn">Extract</button>
+  <span id="status" class="muted"></span>
+</div>
+<pre id="out"></pre>
+
+<script>
+const btn = document.getElementById('btn');
+const url = document.getElementById('url');
+const out = document.getElementById('out');
+const status = document.getElementById('status');
+
+btn.addEventListener('click', async () => {
+  if (!url.value) return;
+  status.textContent = 'fetching...';
+  out.textContent = '';
+  const t0 = performance.now();
+  try {
+    const r = await fetch('/extract', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url: url.value})
+    });
+    const data = await r.json();
+    const dt = (performance.now() - t0).toFixed(0);
+    status.textContent = `${r.status} in ${dt}ms`;
+    out.textContent = JSON.stringify(data, null, 2);
+  } catch (e) {
+    status.textContent = 'error';
+    out.textContent = String(e);
+  }
+});
+</script>
+</body>
+</html>

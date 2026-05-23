@@ -28,11 +28,13 @@ Resources:
           RAW_HTML_BUCKET: !Ref RawHtmlBucket
           JOBS_BUCKET: !Ref JobsBucket
           LOG_LEVEL: INFO
+          STATIC_QUEUE_URL: !Ref StaticQueue
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref PagesTable }
         - DynamoDBCrudPolicy: { TableName: !Ref JobsTable }
         - S3CrudPolicy: { BucketName: !Ref RawHtmlBucket }
         - S3CrudPolicy: { BucketName: !Ref JobsBucket }
+        - SQSSendMessagePolicy: { QueueName: !GetAtt StaticQueue.QueueName }
       Events:
         ApiRoot:
           Type: HttpApi
@@ -104,6 +106,52 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub "brightedge-jobs-${AWS::AccountId}-${AWS::Region}"
+
+  StaticQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: brightedge-static
+      VisibilityTimeout: 90
+      MessageRetentionPeriod: 345600  # 4 days
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt StaticDLQ.Arn
+        maxReceiveCount: 3
+
+  StaticDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: brightedge-static-dlq
+      MessageRetentionPeriod: 1209600  # 14 days
+
+  StaticWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: brightedge-crawler-static-worker
+      CodeUri: ../
+      Handler: crawler.workers.static_worker.handler
+      MemorySize: 1024
+      Timeout: 60
+      ReservedConcurrentExecutions: 20
+      Environment:
+        Variables:
+          PAGES_TABLE: !Ref PagesTable
+          JOBS_TABLE: !Ref JobsTable
+          RAW_HTML_BUCKET: !Ref RawHtmlBucket
+          JOBS_BUCKET: !Ref JobsBucket
+          CONFIDENCE_THRESHOLD: "0.5"
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref PagesTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref JobsTable }
+        - S3CrudPolicy: { BucketName: !Ref RawHtmlBucket }
+        - S3CrudPolicy: { BucketName: !Ref JobsBucket }
+        - SQSPollerPolicy: { QueueName: !GetAtt StaticQueue.QueueName }
+      Events:
+        SqsTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt StaticQueue.Arn
+            BatchSize: 5
+            MaximumBatchingWindowInSeconds: 2
 
 Outputs:
   ApiUrl:

@@ -44,6 +44,11 @@ data/
 
 # Claude / hooks
 .claude/hooks/.logs/
+.ckignore
+
+# Assignment brief (not part of deliverable)
+*Assignment*.pdf
+BREDG-*.pdf
 
 # Notebooks
 .ipynb_checkpoints/

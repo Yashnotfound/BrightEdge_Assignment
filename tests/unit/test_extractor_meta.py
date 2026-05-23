@@ -1,5 +1,5 @@
 """Tests for HTML meta extraction."""
-from crawler.extractor.meta import MetaTags, extract_meta
+from crawler.extractor.meta import extract_meta
 
 
 def test_extract_title():

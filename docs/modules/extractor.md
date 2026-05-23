@@ -19,7 +19,7 @@ ordinary malformed input.
 ## Public API
 
 - `crawler.extractor.meta.extract_meta(html: str) -> MetaTags`
-- `crawler.extractor.meta.MetaTags` — dataclass: `title`, `description`, `canonical_url`, `keywords`, `open_graph`, `twitter_card`, `raw_meta`.
+- `crawler.extractor.meta.MetaTags` — dataclass: `title`, `description`, `canonical_url`, `keywords`, `open_graph`, `twitter_card`, `h1` (list, up to 3), `raw_meta`.
 - `crawler.extractor.jsonld.extract_jsonld(html: str) -> list[dict[str, Any]]`
 - `crawler.extractor.body.extract_body(html: str) -> str | None`
 - `crawler.extractor.language.detect_language(text: str | None) -> str | None`

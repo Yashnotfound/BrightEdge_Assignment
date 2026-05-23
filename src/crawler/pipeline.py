@@ -55,7 +55,7 @@ def _process(*, url: str, html: str, http_status: int, content_type: str,
     )
 
     heuristic_cands = candidates_from_meta_and_jsonld(meta, jsonld)
-    keyphrase_cands = extract_keyphrases(body)
+    keyphrase_cands = extract_keyphrases(body, language=language)
     fused = fuse_topics(heuristic_cands, keyphrase_cands, top_k=10)
     topics = [Topic(label=t.label, score=t.score, sources=t.sources) for t in fused]
 

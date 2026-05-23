@@ -14,6 +14,7 @@ class MetaTags:
     keywords: list[str] = field(default_factory=list)
     open_graph: dict[str, str] = field(default_factory=dict)
     twitter_card: dict[str, str] = field(default_factory=dict)
+    h1: list[str] = field(default_factory=list)
     raw_meta: dict[str, str] = field(default_factory=dict)
 
 
@@ -23,6 +24,11 @@ def extract_meta(html: str) -> MetaTags:
 
     if soup.title and soup.title.string:
         meta.title = soup.title.string.strip()
+
+    for h1_tag in soup.find_all("h1", limit=3):
+        text = h1_tag.get_text(" ", strip=True)
+        if text:
+            meta.h1.append(text)
 
     for tag in soup.find_all("meta"):
         name = (tag.get("name") or "").lower().strip()

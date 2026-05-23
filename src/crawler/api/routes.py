@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from crawler.api.schemas import BatchRequest, BatchResponse, ExtractRequest, ExtractResult, JobStatus
 from crawler.config import load_settings
+from crawler.fetcher.headless import invoke_headless
 from crawler.pipeline import extract_pipeline
 from crawler.storage.dynamo import JobsRepo, PagesRepo
 from crawler.storage.hashing import url_hash as _url_hash
@@ -44,19 +45,34 @@ def _persist(result: ExtractResult, html: str | None) -> None:
 
 @router.post("/extract", response_model=ExtractResult, tags=["extract"])
 async def extract(req: ExtractRequest) -> ExtractResult:
+    settings = _settings()
     try:
         returned = await extract_pipeline(req.url, return_html=True)
-        # Handle both tuple (result, html) and plain ExtractResult (e.g., in tests)
         if isinstance(returned, tuple):
             result, raw_html = returned
         else:
             result, raw_html = returned, None
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"fetch failed: {exc}") from exc
+
+    if (
+        result.extraction_confidence < settings.confidence_threshold
+        and settings.headless_function_name
+    ):
+        try:
+            data = invoke_headless(req.url, persist=False)
+            headless_result = ExtractResult(**data)
+            if headless_result.extraction_confidence > result.extraction_confidence:
+                result = headless_result
+                raw_html = None  # headless wrote its own copy (or persist=False)
+        except Exception:  # noqa: BLE001
+            pass  # Headless failed — keep the static result
+
     try:
-        _persist(result, raw_html)
+        if raw_html is not None:
+            _persist(result, raw_html)
     except Exception:  # noqa: BLE001
-        pass  # persistence failures should not break the response
+        pass
     return result
 
 

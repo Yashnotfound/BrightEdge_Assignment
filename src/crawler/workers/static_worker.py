@@ -34,6 +34,21 @@ def _process_one(message_body: dict) -> None:
 
     try:
         result, raw_html = asyncio.run(extract_pipeline(url, return_html=True))
+
+        # Escalate to headless if confidence is low and headless is configured
+        if (
+            result.extraction_confidence < settings.confidence_threshold
+            and settings.headless_function_name
+        ):
+            try:
+                from crawler.fetcher.headless import invoke_headless
+                data = invoke_headless(url, persist=True)  # headless persists itself
+                if jobs:
+                    jobs.increment(job_id=job_id, succeeded=1)
+                return
+            except Exception:
+                logger.exception("headless escalation failed; keeping static result")
+
         domain = urlsplit(result.url).netloc.lower()
         fetched_iso = result.fetched_at.isoformat()
         s3_html_uri = store.put_raw_html(

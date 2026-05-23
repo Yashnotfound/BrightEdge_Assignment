@@ -53,6 +53,7 @@ def test_process_one_extracts_and_persists(aws_resources, monkeypatch):
         fetcher_used="static",
         http_status=200,
         title="Test",
+        extraction_confidence=0.9,
     )
 
     async def fake_pipeline(url, *, return_html=False):

@@ -35,7 +35,10 @@ def test_extract_keyphrases_skips_below_min_body_chars():
 
 def test_extract_keyphrases_skips_unsupported_language():
     """Unsupported languages (e.g., Swahili 'sw') skip YAKE rather than emit garbage."""
-    text = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua." * 3
+    text = (
+        "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod "
+        "tempor incididunt ut labore et dolore magna aliqua."
+    ) * 3
     assert extract_keyphrases(text, language="sw") == []
 
 
@@ -48,7 +51,7 @@ def test_extract_keyphrases_uses_german_stopwords():
     ) * 3
     cands = extract_keyphrases(text, language="de", max_keyphrases=10)
     labels = {c.label for c in cands}
-    assert any("einstein" in l for l in labels)
+    assert any("einstein" in label for label in labels)
     # German articles 'die', 'der', 'das' should be filtered as stopwords
     assert "die" not in labels and "der" not in labels and "das" not in labels
 

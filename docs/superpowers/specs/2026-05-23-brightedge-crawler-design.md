@@ -26,7 +26,7 @@ Disallowed: 3rd-party services that replace the crawler itself (e.g., Diffbot, S
 ## 2. Goals
 
 - **Functional:** given any URL, return structured metadata (title, description, OG, JSON-LD, body, language) and a ranked list of topics with scores.
-- **Scale story:** architecture must extrapolate cleanly from the demo to 5B URLs/month at ~$6 per 1k URLs.
+- **Scale story:** architecture must extrapolate cleanly from the demo to 5B URLs/month at ~$12 per million URLs (optimized) / ~$19 per million URLs (unoptimized lift-and-shift). See §7.8 for the breakdown.
 - **Operational story:** unified schema, defined SLOs, monitoring with clear cost levers.
 - **PoC story:** an honest, dated phase plan from take-home to GA with risk-categorized blockers.
 
@@ -153,9 +153,9 @@ Threshold `< 0.5` triggers headless retry. Per-domain overrides supported.
 |---|---|---|
 | URLs per month | "billions" | 5B |
 | Sustained crawl rate | 5B / 30d | ~1,930 URL/s |
-| Read QPS on metadata | "millions of requests" | ~100 RPS sustained, 1k peak |
-| Avg HTML size | typical | ~200 KB raw, ~60 KB gzipped |
-| Raw HTML/month | 5B × 60 KB | ~300 TB |
+| Read QPS on metadata | "millions of requests" — interpret as 50M/day | ~500 RPS sustained, ~5k peak |
+| Avg HTML size | typical | ~200 KB raw, ~60 KB gzipped (zstd ~40 KB) |
+| Raw HTML/month | 5B × 50 KB (zstd-compressed steady state) | ~250 TB/month new data |
 | Extracted metadata/URL | post-processing | ~2 KB → 10 TB/month |
 
 ### 7.2 Reference architecture
@@ -294,7 +294,7 @@ s3://crawler-prod/
 
 ### 7.8 Cost model @ 5B URL/month
 
-**Assumptions:** static worker 500ms avg @ 512 MB; headless worker 2s avg @ 2 GB; DDB items 2 KB; 10% headless escalation; on-demand DDB; us-east-1 pricing as of 2026-05.
+**Assumptions:** static worker 500ms avg @ 512 MB; headless worker 2s avg @ 2 GB; DDB items 2 KB; 10% headless escalation; on-demand DDB; 90-day hot retention + 2-year Glacier Deep Archive; us-east-1 pricing as of 2026-05.
 
 **Unoptimized (lift-and-shift of the PoC topology to scale):**
 
@@ -303,37 +303,48 @@ s3://crawler-prod/
 | Lambda — static (4.5B × 0.5s × 0.5 GB) | 1.13B GB-s × $0.0000167 + 4.5B × $0.20/M req | ~$19K + ~$0.9K = **~$20K** |
 | Lambda — headless (500M × 2s × 2 GB) | 2B GB-s × $0.0000167 + 500M × $0.20/M req | ~$33K + ~$0.1K = **~$33K** |
 | DynamoDB writes (5B × 2 WRU) | 10B WRU × $1.25/M | **~$13K** |
-| DynamoDB reads (300M @ 4 KB strongly consistent) | 75M RCU × $0.25/M | **<$0.1K** |
+| DynamoDB reads (1.3B @ 4 KB strongly consistent) | ~325M RCU × $0.25/M | **~$0.1K** |
 | SQS (5B sends + 5B receives + DLQ) | 10B × $0.40/M | **~$4K** |
-| S3 raw (300 TB Standard month 1, lifecycle to Glacier) | Glacier-amortized over 90d retention | **~$2K** |
+| S3 raw — steady state with 90d hot / 2yr Glacier | ~300 TB hot (Standard+IA blend) + ~7,200 TB Glacier Deep Archive | **~$22K** |
 | S3 Parquet + Athena scans | ~10 TB scanned/mo × $5/TB | **~$1K** |
 | ElastiCache (cache.r6g.large × 2, multi-AZ) | $0.252/hr × 2 × 730 | **~$0.5K** |
 | CloudWatch metrics + Logs + X-Ray | typical at this volume | **~$1K** |
 | Data transfer (assume 5% egress to /pages clients) | rough | **~$0.5K** |
-| **Total (unoptimized)** | | **~$75K/mo ≈ $15 per 1k URLs** |
+| **Total (unoptimized)** | | **~$95K/mo ≈ $19 per million URLs** |
 
 **Optimized (Phase 2/3 levers applied):**
 
 | Lever | Saving | Result |
 |---|---|---|
-| Headless on Fargate with high concurrency (Phase 2) | Headless $33K → $14K | -$19K |
-| Reduce escalation rate to 5% via better static heuristics | Headless $14K → $7K | -$7K |
-| Lambda Savings Plans (1-yr commit, ~17% off compute) | Static $20K → $17K | -$3K |
-| DDB provisioned with auto-scaling once predictable | DDB $13K → $8K | -$5K |
-| ETag/304 short-circuit on re-crawls (assume 40% repeat traffic) | Static & DDB writes -40% on repeats | -$8K |
-| zstd over gzip raw HTML (-30%) | S3 raw $2K → $1.4K | -$0.6K |
-| **Total (optimized)** | | **~$33K/mo ≈ $7 per 1k URLs** |
+| Headless tier migration off Lambda to Fargate w/ high concurrency (Phase 2) | Headless $33K → $14K | -$19K |
+| Reduce escalation rate from 10% → 5% via better static heuristics | Headless $14K → $7K | -$7K |
+| Static tier partial migration to Fargate at sustained throughput (Phase 4) | Static $20K → $14K (the steady portion; spike traffic stays on Lambda) | -$6K |
+| Lambda Savings Plans on remaining Lambda compute (1-yr, ~17% off) | -$1K | -$1K |
+| DDB provisioned with auto-scaling once volume is predictable | DDB $13K → $8K | -$5K |
+| ETag/304 short-circuit on re-crawls (40% of traffic is re-crawl) | Static + DDB writes -40% on repeat traffic | -$10K |
+| zstd over gzip for raw HTML, plus more aggressive lifecycle to Glacier | S3 raw $22K → $15K | -$7K |
+| **Total (optimized)** | | **~$60K/mo ≈ $12 per million URLs** |
+
+**Unit-rate translations (so the cost claim is unambiguous):**
+
+| Scale | Unoptimized | Optimized |
+|---|---|---|
+| Per URL | $0.000019 | $0.000012 |
+| Per 1,000 URLs | $0.019 | $0.012 |
+| Per 1,000,000 URLs | **$19** | **$12** |
+| Per 1,000,000,000 URLs | $19,000 | $12,000 |
+| 5B URLs/month total | $95K/mo | $60K/mo |
 
 **Cost levers (ranked by impact, see table above for $):**
 
 1. **Headless tier migration to Fargate** at sustained volume — biggest single win.
-2. **Keep escalation rate < 10%** (target 5% once domain-specific tuning lands).
+2. **S3 storage tiering** (zstd + aggressive Glacier lifecycle) — second biggest.
 3. **ETag/304 short-circuit** on re-crawls — huge on repeat passes.
-4. **DDB on-demand → provisioned** once volume is predictable.
-5. **Lambda Savings Plans** for the static tier (which stays on Lambda).
-6. **zstd over gzip** for raw HTML storage.
+4. **Keep escalation rate < 10%** (target 5% once domain-specific tuning lands).
+5. **DDB on-demand → provisioned** once volume is predictable.
+6. **Static tier migration to Fargate** for the predictable steady-state portion of traffic (Phase 4); Lambda still absorbs spikes.
 
-The PoC demo runs the unoptimized all-Lambda topology because it scales to zero (free when idle). The Phase 2 cost-optimization work is the bridge to the $7/1k production target.
+**Why Lambda for everything at PoC?** The demo runs all-Lambda because it scales to zero — free when idle, no minimum cost floor for a public demo URL. At sustained billion-URL volume the economics flip and Fargate (or even self-managed EKS) for the steady portion of static + headless workloads wins on $/URL by ~3x. The Phase 2/4 cost-optimization work is the bridge from the demo topology to the $12/M optimized target.
 
 ## 8. Part 3 — PoC plan
 
@@ -425,7 +436,7 @@ Track B can't fully validate until Track A's load test ships; Track B's hardest 
 
 **Cost (sanity check):**
 - Headless escalation rate on the 3 test URLs matches the < 10% design target (Amazon is expected to escalate; REI and CNN shouldn't).
-- Demo per-URL cost is dominated by Lambda fixed overhead and won't match the production projection at low volume, but the **scaled-up extrapolation** (compute-seconds per URL × projected 5B URLs/mo) should land within 2× of the Part 2 optimized projection ($7/1k → < $14/1k extrapolated).
+- Demo per-URL cost is dominated by Lambda fixed overhead and won't match the production projection at low volume, but the **scaled-up extrapolation** (compute-seconds per URL × projected 5B URLs/mo) should land within 2× of the Part 2 optimized projection (~$12 per million URLs, so < ~$24 per million URLs extrapolated).
 
 ### 8.6 Quality gates for the production team (post-PoC)
 

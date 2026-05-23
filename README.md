@@ -126,15 +126,25 @@ hardening plan around real anti-bot defense.
 
 ## Local development
 
+One-shot bootstrap (works on macOS and Linux):
+
 ```bash
 git clone https://github.com/<you>/brightedge-crawler
 cd brightedge-crawler
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+./scripts/setup.sh   # creates .venv, installs deps editable, runs all tests
+```
 
-# Tests (87 passing)
-pytest
+> **macOS note:** `scripts/setup.sh` clears the `UF_HIDDEN` filesystem flag
+> on `.venv/` after creating it. Without this, Python's `site.py` silently
+> skips the editable-install `.pth` file (it refuses to load `.pth` files
+> from hidden directories), and `import crawler` fails. The script handles
+> this transparently. If you skip the script and create `.venv` manually,
+> run `chflags -R nohidden .venv` once after `python3.12 -m venv .venv`.
+
+Then to run the server:
+
+```bash
+source .venv/bin/activate
 
 # Run locally — no API key required when API_KEY env var is unset
 uvicorn crawler.api.main:app --reload --port 8000
@@ -143,6 +153,9 @@ open http://localhost:8000/
 # Run locally WITH auth enforced (matches the deployed behavior)
 API_KEY="any-secret-you-pick" uvicorn crawler.api.main:app --port 8000
 # Then send: curl -H 'Authorization: Bearer any-secret-you-pick' …
+
+# Tests
+pytest    # 87 passing
 ```
 
 ## Deployment

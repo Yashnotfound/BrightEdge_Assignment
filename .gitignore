@@ -44,6 +44,7 @@ data/
 
 # Claude / hooks
 .claude/hooks/.logs/
+.claude/settings.local.json
 .ckignore
 
 # Assignment brief (not part of deliverable)

@@ -37,6 +37,28 @@ Both hooks are pure Python scripts under `.claude/hooks/`. If you need
 to disable temporarily, comment the entry out of `.claude/settings.json`
 rather than deleting it.
 
+## End-of-task review
+
+Whenever you finish a task that changed code or docs, **before reporting
+success to the user**, dispatch both reviewer subagents in parallel
+(single message, two `Agent` tool calls):
+
+1. **`intent-reviewer`** — brief it with the user's original request,
+   any agreed clarifications, and a pointer to the changes (`git diff` /
+   recent commits). It checks "did we deliver what was asked, no more,
+   no less?".
+2. **`objective-reviewer`** — brief it ONLY with where to find the
+   changes. Do NOT pass the user's request, intent, or framing. It
+   reviews the code cold for correctness, bugs, security, performance,
+   idioms, and project norms.
+
+Both are read-only. If either flags `FAIL` / `REQUEST_CHANGES` / `BLOCK`,
+fix the issue before reporting success. `APPROVE_WITH_NITS` or
+`PASS_WITH_NOTES` is OK to ship; mention the notes to the user.
+
+Skip the reviewers only for: pure conversational answers, read-only
+investigations, or single-line typo fixes.
+
 ## Coding norms
 
 - Python 3.12; type hints; `from __future__ import annotations` at top of every module.

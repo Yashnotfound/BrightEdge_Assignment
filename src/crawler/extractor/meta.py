@@ -18,8 +18,15 @@ class MetaTags:
     raw_meta: dict[str, str] = field(default_factory=dict)
 
 
-def extract_meta(html: str) -> MetaTags:
-    soup = BeautifulSoup(html, "lxml")
+def extract_meta(html: str, *, soup: BeautifulSoup | None = None) -> MetaTags:
+    """Parse meta/OG/Twitter/canonical/h1 fields from HTML.
+
+    Pass `soup` to reuse an already-parsed BeautifulSoup tree and avoid the
+    second parse — both `extract_meta` and `extract_jsonld` accept this and
+    the pipeline parses once.
+    """
+    if soup is None:
+        soup = BeautifulSoup(html, "lxml")
     meta = MetaTags()
 
     if soup.title and soup.title.string:

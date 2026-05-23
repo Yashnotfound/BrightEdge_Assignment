@@ -18,11 +18,16 @@ ordinary malformed input.
 
 ## Public API
 
-- `crawler.extractor.meta.extract_meta(html: str) -> MetaTags`
+- `crawler.extractor.meta.extract_meta(html: str, *, soup: BeautifulSoup | None = None) -> MetaTags`
 - `crawler.extractor.meta.MetaTags` — dataclass: `title`, `description`, `canonical_url`, `keywords`, `open_graph`, `twitter_card`, `h1` (list, up to 3), `raw_meta`.
-- `crawler.extractor.jsonld.extract_jsonld(html: str) -> list[dict[str, Any]]`
+- `crawler.extractor.jsonld.extract_jsonld(html: str, *, soup: BeautifulSoup | None = None) -> list[dict[str, Any]]`
 - `crawler.extractor.body.extract_body(html: str) -> str | None`
 - `crawler.extractor.language.detect_language(text: str | None) -> str | None`
+
+Pipeline parses `BeautifulSoup(html, "lxml")` once and passes the same `soup`
+to both `extract_meta` and `extract_jsonld` to avoid the second parse.
+Callers that supply only raw HTML still work — both extractors fall back to
+parsing internally if `soup` is omitted.
 
 ## Guarantees
 

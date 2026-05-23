@@ -1,6 +1,7 @@
 """HTTP routes."""
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from urllib.parse import urlsplit
@@ -29,23 +30,54 @@ def _settings():
     return load_settings()
 
 
-def _persist(result: ExtractResult, html: str | None) -> None:
+async def _persist(result: ExtractResult, html: str | None) -> None:
+    """Persist S3 raw HTML + S3 JSON-LD + DynamoDB row concurrently.
+
+    boto3 is sync, so each write runs in a default-executor thread; the three
+    are awaited together. DynamoDB write is intentionally sequenced AFTER the
+    S3 writes complete so its row references the final S3 URIs.
+    """
     s = _settings()
     if not s.raw_html_bucket or not s.pages_table:
         return  # local-dev fallback: skip persistence
     store = RawHtmlStore(bucket=s.raw_html_bucket)
     domain = urlsplit(result.url).netloc.lower()
     fetched_iso = result.fetched_at.isoformat()
-    s3_html_uri = store.put_raw_html(
-        url_hash=result.url_hash, domain=domain,
-        fetched_at_iso=fetched_iso, html=html or "",
-    ) if html else None
-    s3_jsonld_uri = store.put_jsonld(
-        url_hash=result.url_hash, domain=domain,
-        fetched_at_iso=fetched_iso, jsonld=result.json_ld,
-    ) if result.json_ld else None
-    PagesRepo(table_name=s.pages_table).put(
-        result, s3_html_uri=s3_html_uri, s3_jsonld_uri=s3_jsonld_uri
+
+    html_task = (
+        asyncio.to_thread(
+            store.put_raw_html,
+            url_hash=result.url_hash, domain=domain,
+            fetched_at_iso=fetched_iso, html=html or "",
+        )
+        if html
+        else None
+    )
+    jsonld_task = (
+        asyncio.to_thread(
+            store.put_jsonld,
+            url_hash=result.url_hash, domain=domain,
+            fetched_at_iso=fetched_iso, jsonld=result.json_ld,
+        )
+        if result.json_ld
+        else None
+    )
+
+    tasks = [t for t in (html_task, jsonld_task) if t is not None]
+    s3_results = await asyncio.gather(*tasks) if tasks else []
+    # Re-thread the results back into the right slots
+    idx = 0
+    s3_html_uri = None
+    s3_jsonld_uri = None
+    if html_task is not None:
+        s3_html_uri = s3_results[idx]
+        idx += 1
+    if jsonld_task is not None:
+        s3_jsonld_uri = s3_results[idx]
+
+    await asyncio.to_thread(
+        PagesRepo(table_name=s.pages_table).put,
+        result, s3_html_uri=s3_html_uri, s3_jsonld_uri=s3_jsonld_uri,
     )
 
 
@@ -86,7 +118,7 @@ async def extract(
 
     try:
         if raw_html is not None:
-            _persist(result, raw_html)
+            await _persist(result, raw_html)
     except Exception:  # noqa: BLE001, S110 - persistence failure must not break the response
         pass
     return result

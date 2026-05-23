@@ -7,6 +7,8 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Iterator
 
+from bs4 import BeautifulSoup
+
 from crawler.api.schemas import ExtractResult, Topic
 from crawler.classifier.fuse import fuse_topics
 from crawler.classifier.heuristics import candidates_from_meta_and_jsonld
@@ -81,10 +83,12 @@ def _process_with_timings(
 ) -> tuple[ExtractResult, dict[str, float]]:
     timings: dict[str, float] = {}
 
+    with _stage("soup", timings):
+        soup = BeautifulSoup(html, "lxml")
     with _stage("meta", timings):
-        meta = extract_meta(html)
+        meta = extract_meta(html, soup=soup)
     with _stage("jsonld", timings):
-        jsonld = extract_jsonld(html)
+        jsonld = extract_jsonld(html, soup=soup)
     with _stage("body", timings):
         body = extract_body(html)
     word_count = len(body.split()) if body else 0

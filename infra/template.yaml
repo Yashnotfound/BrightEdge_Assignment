@@ -29,12 +29,14 @@ Resources:
           JOBS_BUCKET: !Ref JobsBucket
           LOG_LEVEL: INFO
           STATIC_QUEUE_URL: !Ref StaticQueue
+          HEADLESS_FUNCTION_NAME: !Ref HeadlessWorkerFunction
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref PagesTable }
         - DynamoDBCrudPolicy: { TableName: !Ref JobsTable }
         - S3CrudPolicy: { BucketName: !Ref RawHtmlBucket }
         - S3CrudPolicy: { BucketName: !Ref JobsBucket }
         - SQSSendMessagePolicy: { QueueName: !GetAtt StaticQueue.QueueName }
+        - LambdaInvokePolicy: { FunctionName: !Ref HeadlessWorkerFunction }
       Events:
         ApiRoot:
           Type: HttpApi
@@ -139,12 +141,14 @@ Resources:
           RAW_HTML_BUCKET: !Ref RawHtmlBucket
           JOBS_BUCKET: !Ref JobsBucket
           CONFIDENCE_THRESHOLD: "0.5"
+          HEADLESS_FUNCTION_NAME: !Ref HeadlessWorkerFunction
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref PagesTable }
         - DynamoDBCrudPolicy: { TableName: !Ref JobsTable }
         - S3CrudPolicy: { BucketName: !Ref RawHtmlBucket }
         - S3CrudPolicy: { BucketName: !Ref JobsBucket }
         - SQSPollerPolicy: { QueueName: !GetAtt StaticQueue.QueueName }
+        - LambdaInvokePolicy: { FunctionName: !Ref HeadlessWorkerFunction }
       Events:
         SqsTrigger:
           Type: SQS
@@ -152,6 +156,26 @@ Resources:
             Queue: !GetAtt StaticQueue.Arn
             BatchSize: 5
             MaximumBatchingWindowInSeconds: 2
+
+  HeadlessWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: brightedge-crawler-headless-worker
+      PackageType: Image
+      ImageUri: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/brightedge-headless:latest"
+      MemorySize: 3008
+      Timeout: 60
+      Environment:
+        Variables:
+          PAGES_TABLE: !Ref PagesTable
+          RAW_HTML_BUCKET: !Ref RawHtmlBucket
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref PagesTable }
+        - S3CrudPolicy: { BucketName: !Ref RawHtmlBucket }
+    Metadata:
+      DockerTag: latest
+      DockerContext: ../
+      Dockerfile: infra/headless.Dockerfile
 
 Outputs:
   ApiUrl:

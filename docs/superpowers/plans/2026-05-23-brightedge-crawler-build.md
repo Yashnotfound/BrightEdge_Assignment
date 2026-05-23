@@ -1503,9 +1503,9 @@ def extract_keyphrases(text: str | None, *, max_keyphrases: int = 20) -> list[Ke
     # YAKE scores: lower = more important. Invert so larger = better topic.
     out: list[KeyphraseCandidate] = []
     for phrase, score in raw[:max_keyphrases]:
-        # Map YAKE score (typically 0.0–0.5) to weight via inverse
-        # Floor to avoid div-by-zero; cap at 5.0
-        weight = min(5.0, 1.0 / max(score, 0.01))
+        # Map YAKE score (typically 0.0–0.5) to weight via inverse function that doesn't saturate.
+        # Max weight is 5.0 when raw score is 0.0.
+        weight = 1.0 / (score + 0.2)
         out.append(KeyphraseCandidate(label=phrase.lower(), weight=weight))
     return out
 ```

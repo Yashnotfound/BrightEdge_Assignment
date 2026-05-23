@@ -222,6 +222,32 @@ def test_extract_fixture_mode_amazon():
     assert any("fixture_mode" in e for e in data["errors"])
 
 
+def test_extract_fixture_mode_rei():
+    client = TestClient(app)
+    response = client.post(
+        "/extract?fixture=1",
+        json={"url": "http://blog.rei.com/camp/how-to-introduce-your-indoorsy-friend-to-the-outdoors/"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["fetcher_used"] == "fixture"
+    assert "REI" in data["title"] or "Outdoors" in data["title"]
+    assert any(t["label"] == "camping" for t in data["topics"])
+
+
+def test_extract_fixture_mode_cnn():
+    client = TestClient(app)
+    response = client.post(
+        "/extract?fixture=1",
+        json={"url": "https://www.cnn.com/2025/09/23/tech/google-study-90-percent-tech-jobs-ai"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["fetcher_used"] == "fixture"
+    assert "AI" in data["title"] or "tech" in data["title"].lower()
+    assert any(t["label"] == "ai" for t in data["topics"])
+
+
 def test_extract_fixture_mode_ignored_for_non_amazon(monkeypatch):
     """Fixture mode only triggers for the Amazon test URL."""
     fake = ExtractResult(

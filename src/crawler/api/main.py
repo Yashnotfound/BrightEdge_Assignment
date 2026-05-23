@@ -12,7 +12,7 @@ from crawler.api.routes import router
 app = FastAPI(title="BrightEdge Crawler", version="0.1.0", docs_url="/docs", redoc_url=None)
 app.include_router(router)
 
-_WEB_DIR = Path(__file__).resolve().parents[3] / "web"
+_WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 
 @app.get("/", response_class=HTMLResponse, tags=["meta"])

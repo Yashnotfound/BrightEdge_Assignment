@@ -88,12 +88,19 @@ async def extract(
     req: ExtractRequest,
     fixture: int = Query(
         0, ge=0, le=1,
-        description="If 1 and URL matches Amazon test URL, returns saved fixture",
+        description="If 1 and URL matches a known test URL, returns saved fixture response",
     ),
 ) -> ExtractResult:
-    if fixture == 1 and "amazon.com" in req.url.lower() and "cuisinart" in req.url.lower():
-        from crawler.fixtures import amazon_toaster
-        return amazon_toaster()
+    if fixture == 1:
+        url_lc = req.url.lower()
+        from crawler import fixtures
+        if "amazon.com" in url_lc and "cuisinart" in url_lc:
+            return fixtures.amazon_toaster()
+        if "blog.rei.com" in url_lc and "indoorsy" in url_lc:
+            return fixtures.rei_outdoors()
+        if "cnn.com" in url_lc and "tech-jobs-ai" in url_lc:
+            return fixtures.cnn_tech()
+        # No match → fall through to live fetch
 
     settings = _settings()
     try:

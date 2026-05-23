@@ -10,8 +10,8 @@ ordinary malformed input.
 
 | File | One-liner |
 |---|---|
-| `meta.py` | `extract_meta(html) -> MetaTags`: `<title>`, `<meta name/property>`, OG, Twitter Card, canonical, keywords. |
-| `jsonld.py` | `extract_jsonld(html) -> list[dict]`: every parseable `<script type="application/ld+json">` block. |
+| `meta.py` | `extract_meta(html, *, soup=None) -> MetaTags`: `<title>`, `<meta name/property>`, OG, Twitter Card, canonical, keywords, h1 (≤3). |
+| `jsonld.py` | `extract_jsonld(html, *, soup=None) -> list[dict]`: every parseable `<script type="application/ld+json">` block. |
 | `body.py` | `extract_body(html) -> str \| None`: main body text via `trafilatura` (boilerplate-stripped). |
 | `language.py` | `detect_language(text) -> str \| None`: `langdetect` with seeded determinism; min 20 chars. |
 | `__init__.py` | Empty marker. |

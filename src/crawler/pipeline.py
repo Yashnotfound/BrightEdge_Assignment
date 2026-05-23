@@ -82,6 +82,7 @@ def _process_with_timings(
     *, url: str, html: str, http_status: int, content_type: str, fetcher_used: str,
 ) -> tuple[ExtractResult, dict[str, float]]:
     timings: dict[str, float] = {}
+    t_total = time.perf_counter()
 
     with _stage("soup", timings):
         soup = BeautifulSoup(html, "lxml")
@@ -135,7 +136,9 @@ def _process_with_timings(
         errors=errors,
     )
 
-    timings["total"] = round(sum(timings.values()), 3)
+    # True end-to-end wall clock (includes uninstrumented work between stages
+    # like ExtractResult construction). Distinct from `sum(stage durations)`.
+    timings["total"] = round((time.perf_counter() - t_total) * 1000, 3)
     logger.info(
         "pipeline.timing",
         extra={"timings_ms": timings, "url": url, "language": language},

@@ -5,6 +5,7 @@ import asyncio
 import logging
 from urllib.parse import urlsplit
 
+from crawler.api.schemas import ExtractResult
 from crawler.config import load_settings
 from crawler.pipeline import process_html
 from crawler.storage.dynamo import PagesRepo
@@ -37,10 +38,12 @@ async def _fetch_headless(url: str) -> tuple[str, int]:
             await browser.close()
 
 
-async def _persist_headless(result, html: str) -> None:
+async def _persist_headless(result: ExtractResult, html: str) -> None:
     """Mirror of routes._persist for the headless worker: parallel S3 writes,
     then a DynamoDB write that references the resulting URIs."""
     s = load_settings()
+    if not s.raw_html_bucket or not s.pages_table:
+        return  # local-dev fallback: skip persistence (matches routes._persist)
     store = RawHtmlStore(bucket=s.raw_html_bucket)
     domain = urlsplit(result.url).netloc.lower()
     fetched_iso = result.fetched_at.isoformat()

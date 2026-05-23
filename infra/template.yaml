@@ -143,6 +143,9 @@ Resources:
       Handler: crawler.workers.static_worker.handler
       MemorySize: 1024
       Timeout: 60
+      # New AWS accounts have a default account-wide concurrency cap of 10.
+      # Cap this consumer at 5 so api + headless still have headroom.
+      ReservedConcurrentExecutions: 5
       Environment:
         Variables:
           PAGES_TABLE: !Ref PagesTable

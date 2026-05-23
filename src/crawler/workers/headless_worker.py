@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from urllib.parse import urlsplit
 
 from crawler.api.schemas import ExtractResult
@@ -16,7 +17,6 @@ logger.setLevel(logging.INFO)
 
 
 async def _fetch_headless(url: str) -> tuple[str, int]:
-    import os
     from playwright.async_api import async_playwright  # imported lazily
 
     # Sparticuz/chromium recommended args. The longer list disables features
@@ -56,6 +56,11 @@ async def _fetch_headless(url: str) -> tuple[str, int]:
     ]
 
     executable = os.environ.get("CHROMIUM_EXECUTABLE")
+    if not executable:
+        # The headless image bakes this env var via Dockerfile ENV directive;
+        # missing it means we'd silently fall back to playwright's bundled
+        # browser (which isn't installed) and crash deep inside launch().
+        raise RuntimeError("CHROMIUM_EXECUTABLE env var is required")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(executable_path=executable, args=chromium_args)

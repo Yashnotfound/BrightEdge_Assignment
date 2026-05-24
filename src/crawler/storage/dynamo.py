@@ -1,14 +1,18 @@
 """DynamoDB Pages and Jobs accessors."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from urllib.parse import urlsplit
 
 import boto3
+from botocore.exceptions import ClientError
 
 from crawler.api.schemas import ExtractResult, JobStatus, Topic
+
+logger = logging.getLogger(__name__)
 
 
 def _resource(region_name: str = "us-east-1"):
@@ -76,9 +80,14 @@ class PagesRepo:
         attrs = _to_decimal_safe(attrs)
         # Build "SET #a0 = :v0, #a1 = :v1, ..." — placeholders avoid
         # collisions with DDB reserved words like `url`, `domain`, `language`.
-        names = {f"#a{i}": k for i, k in enumerate(attrs.keys())}
-        values = {f":v{i}": v for i, v in enumerate(attrs.values())}
-        set_clause = ", ".join(f"{n} = :v{i}" for i, n in enumerate(names))
+        # Index by position rather than by dict iteration so the
+        # placeholders are the single source of truth: a future refactor
+        # that filters `names` or `values` separately can't silently
+        # misalign `#aN` with `:vN`.
+        items = list(attrs.items())
+        names = {f"#a{i}": k for i, (k, _) in enumerate(items)}
+        values = {f":v{i}": v for i, (_, v) in enumerate(items)}
+        set_clause = ", ".join(f"#a{i} = :v{i}" for i in range(len(items)))
         self._table.update_item(
             Key={"url_hash": result.url_hash, "version": 0},
             UpdateExpression=f"SET {set_clause}",
@@ -111,12 +120,25 @@ class PagesRepo:
         Used by the SQS workers to deduplicate counter bumps across
         at-least-once re-deliveries — see ``docs/modules/workers.md``.
         """
-        response = self._table.update_item(
-            Key={"url_hash": url_hash, "version": 0},
-            UpdateExpression="ADD counted_job_ids :j",
-            ExpressionAttributeValues={":j": {job_id}},
-            ReturnValues="ALL_OLD",
-        )
+        try:
+            response = self._table.update_item(
+                Key={"url_hash": url_hash, "version": 0},
+                UpdateExpression="ADD counted_job_ids :j",
+                ExpressionAttributeValues={":j": {job_id}},
+                ReturnValues="ALL_OLD",
+            )
+        except ClientError as exc:
+            # Fail OPEN: if the claim row is in an unexpected state
+            # (e.g. `counted_job_ids` was written with a wrong DDB type
+            # by a future schema drift, raising ValidationException),
+            # we'd rather over-count once than have the entire SQS
+            # record fail, redeliver, and eventually DLQ. Over-counting
+            # matches the pre-idempotency behaviour of the workers.
+            logger.warning(
+                "try_claim_for_job failed for url_hash=%s job_id=%s: %s",
+                url_hash, job_id, exc,
+            )
+            return True
         old_attrs = response.get("Attributes") or {}
         old_claims = old_attrs.get("counted_job_ids") or set()
         return job_id not in old_claims
@@ -125,6 +147,13 @@ class PagesRepo:
         response = self._table.get_item(Key={"url_hash": url_hash, "version": 0})
         item = response.get("Item")
         if not item:
+            return None
+        # Ghost-row guard: `try_claim_for_job` (UpdateItem ADD) creates a
+        # minimal item with only `url_hash` / `version` / `counted_job_ids`
+        # if the row didn't exist yet. `put` always writes `url`, so its
+        # absence is a reliable signal that the row has no content body.
+        # Treat as not-found rather than raising KeyError out of /pages.
+        if "url" not in item:
             return None
         return ExtractResult(
             url=item["url"],

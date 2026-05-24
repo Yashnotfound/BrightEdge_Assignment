@@ -170,6 +170,8 @@ Phase 3 (Quality) deliverable in [Part 3](part-3-poc-plan.md) — see the
 
 ## 8. Cost model @ 5B URL/month
 
+> **⚠️ Optimistic estimates — read before quoting any of these numbers.** Treat the figures below as a best-case floor, not a budget. They assume steady-state throughput, that the < 10% headless escalation target actually holds in production, no anti-bot mitigation overhead (rotating/residential proxies, captcha-solving services, header rotation infra), no retry/backoff traffic, lean observability sampling, and linear on-demand pricing without ramp inefficiency. Real-world cost at this scale is likely **1.5–2× higher** once you include: spike provisioning, retries and DLQ replays, headless cold-starts under burst load, domain-specific anti-bot work (Amazon/Walmart/etc.), CloudWatch metric & log volume at 5B/mo, cross-AZ data transfer, multi-AZ failover headroom, and reserved-capacity inefficiency during ramp. Use these as a directional target; budget against the optimistic × 2 ceiling.
+
 **Assumptions:** static worker 500ms avg @ 512 MB; headless worker 2s avg @ 2 GB; DDB items 2 KB; 10% headless escalation; on-demand DDB; 90-day hot retention + 2-year Glacier Deep Archive; us-east-1 pricing as of 2026-05.
 
 **Unoptimized (lift-and-shift of the PoC topology to scale):**

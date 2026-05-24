@@ -1,7 +1,7 @@
 # BrightEdge Scale Take-Home — Design Spec
 
 **Date:** 2026-05-23
-**Author:** Candidate (with Claude Code assistance)
+**Author:** Yash (with Claude Code assistance)
 **Assignment:** BrightEdge Engineering Developer Candidate Assignment — Scale
 **Deadline:** 48 hours from receipt of instructions
 
@@ -26,7 +26,7 @@ Disallowed: 3rd-party services that replace the crawler itself (e.g., Diffbot, S
 ## 2. Goals
 
 - **Functional:** given any URL, return structured metadata (title, description, OG, JSON-LD, body, language) and a ranked list of topics with scores.
-- **Scale story:** architecture must extrapolate cleanly from the demo to 5B URLs/month at ~$12 per million URLs (optimized) / ~$19 per million URLs (unoptimized lift-and-shift). See §7.8 for the breakdown.
+- **Scale story:** architecture must extrapolate cleanly from the demo to 5B URLs/month at ~$12 per million URLs (optimized) / ~$19 per million URLs (unoptimized lift-and-shift) — **optimistic best-case figures; see §7.8 disclaimer for caveats and the realistic 1.5–2× ceiling.**
 - **Operational story:** unified schema, defined SLOs, monitoring with clear cost levers.
 - **PoC story:** an honest, dated phase plan from take-home to GA with risk-categorized blockers.
 
@@ -293,6 +293,8 @@ s3://crawler-prod/
 **Logs:** structured JSON to CloudWatch Logs; CloudWatch Logs Insights for ad-hoc queries.
 
 ### 7.8 Cost model @ 5B URL/month
+
+> **⚠️ Optimistic estimates — read before quoting any of these numbers.** Treat the figures below as a best-case floor, not a budget. They assume steady-state throughput, that the < 10% headless escalation target actually holds in production, no anti-bot mitigation overhead (rotating/residential proxies, captcha-solving services, header rotation infra), no retry/backoff traffic, lean observability sampling, and linear on-demand pricing without ramp inefficiency. Real-world cost at this scale is likely **1.5–2× higher** once you include: spike provisioning, retries and DLQ replays, headless cold-starts under burst load, domain-specific anti-bot work (Amazon/Walmart/etc.), CloudWatch metric & log volume at 5B/mo, cross-AZ data transfer, multi-AZ failover headroom, and reserved-capacity inefficiency during ramp. Use these as a directional target; budget against the optimistic × 2 ceiling.
 
 **Assumptions:** static worker 500ms avg @ 512 MB; headless worker 2s avg @ 2 GB; DDB items 2 KB; 10% headless escalation; on-demand DDB; 90-day hot retention + 2-year Glacier Deep Archive; us-east-1 pricing as of 2026-05.
 

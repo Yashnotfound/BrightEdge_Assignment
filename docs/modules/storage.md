@@ -63,6 +63,13 @@ Raw HTML is gzipped (`ContentEncoding: gzip`). JSON-LD is plain JSON.
 
 Items use `_to_decimal_safe` to coerce floats to `Decimal` (DDB requirement).
 
+`PagesRepo.put` writes (and `get` reads back) the `errors` list on the
+result so the persist gate's `persistence_rejected:<reason>` audit tag
+survives the round-trip. The `escalation*` fields and `body_text` are
+intentionally not yet persisted — see
+[`docs/known-gaps.md`](../known-gaps.md) "Async path doesn't propagate
+`escalation*` observability".
+
 ## URL normalization
 
 `normalize_url` lowercases scheme + host, drops the fragment, sorts query

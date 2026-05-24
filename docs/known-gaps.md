@@ -97,6 +97,12 @@ back-fill the field after a successful escalation.
 - **Direction:** Pass an `escalated_from` hint into `invoke_headless` and
   have the headless worker set the escalation fields on its persisted
   row; or post-update the row after escalation success.
+- **Note:** The sibling drop of `result.errors` from put/get was a
+  related symptom and is now fixed in
+  [src/crawler/storage/dynamo.py](src/crawler/storage/dynamo.py)
+  (the `persistence_rejected:<reason>` audit tag now survives the
+  round-trip). The `escalation`, `escalation_error`, `escalation_meta`,
+  and `body_text` fields remain dropped and are still in scope above.
 
 ### High-confidence captcha bypass
 

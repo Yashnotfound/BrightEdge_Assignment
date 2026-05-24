@@ -144,6 +144,34 @@ def test_pages_get_returns_none_on_ghost_row(ddb_tables):
     assert fetched is None
 
 
+def test_pages_put_then_get_round_trips_errors_field(ddb_tables):
+    """The ``errors`` list on an ExtractResult must survive a put/get cycle.
+
+    The persist gate stamps ``persistence_rejected:<reason>`` onto
+    ``errors`` so analysts can query DDB for WHY a row was rejected.
+    Dropping the field silently from put/get defeats the audit trail."""
+    pages, _ = ddb_tables
+    repo = PagesRepo(table_name=pages)
+    result = ExtractResult(
+        url="http://blocked.example/x",
+        url_hash="e" * 64,
+        fetched_at=datetime.now(UTC),
+        fetcher_used="rejected",
+        http_status=403,
+        extraction_confidence=0.0,
+        errors=["persistence_rejected:upstream_blocked", "fetch_attempt:1"],
+    )
+    repo.put(result, s3_html_uri=None, s3_jsonld_uri=None)
+
+    fetched = repo.get(url_hash=result.url_hash)
+
+    assert fetched is not None
+    assert fetched.errors == [
+        "persistence_rejected:upstream_blocked",
+        "fetch_attempt:1",
+    ]
+
+
 def test_pages_put_then_get_roundtrips_reserved_word_attrs(ddb_tables):
     """Ensure put/get round-trips correctly when attribute names collide
     with DDB reserved words (``url``, ``language``). Guards against any

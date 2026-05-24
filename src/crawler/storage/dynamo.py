@@ -71,6 +71,7 @@ class PagesRepo:
             "jsonld_present": bool(result.json_ld),
             "json_ld": result.json_ld,
             "topics": [t.model_dump() for t in result.topics],
+            "errors": list(result.errors),
             "extraction_confidence": result.extraction_confidence,
             "word_count": result.word_count,
             "s3_html_uri": s3_html_uri,
@@ -173,6 +174,7 @@ class PagesRepo:
             word_count=int(item.get("word_count") or 0),
             topics=[Topic(**t) for t in (item.get("topics") or [])],
             extraction_confidence=float(item.get("extraction_confidence") or 0.0),
+            errors=list(item.get("errors") or []),
         )
 
 

@@ -241,6 +241,13 @@ def test_process_one_captcha_body_persists_rejected_marker(aws_resources, monkey
     assert item["fetcher_used"] == "rejected"
     assert float(item["extraction_confidence"]) == 0.0
     assert item["topics"] == []
+    # Audit trail: the persist gate's `persistence_rejected:<reason>` tag
+    # must survive into the DDB row so analysts can grep by rejection
+    # reason without parsing the rest of the field.
+    errors = list(item.get("errors") or [])
+    assert any(
+        e.startswith("persistence_rejected:") for e in errors
+    ), f"expected persistence_rejected marker in errors, got {errors}"
 
     # S3 raw HTML was NOT written (no useful content to store).
     s3 = boto3.client("s3", region_name="us-east-1")

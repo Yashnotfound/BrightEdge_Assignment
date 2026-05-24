@@ -109,7 +109,7 @@ def test_process_one_headless_raises_falls_back_to_static(aws_resources, monkeyp
     def boom(url, *, persist=False):
         raise RuntimeError("headless Lambda errored (Unhandled): {...}")
 
-    monkeypatch.setattr("crawler.fetcher.headless.invoke_headless", boom)
+    monkeypatch.setattr("crawler.workers.static_worker.invoke_headless", boom)
 
     from crawler.storage.dynamo import JobsRepo
     JobsRepo(table_name="brightedge-jobs").create(job_id="j2", total=1)
@@ -159,7 +159,7 @@ def test_process_one_headless_malformed_payload_falls_back(aws_resources, monkey
         return {"errorType": "TimeoutError", "errorMessage": "timeout"}
 
     monkeypatch.setattr(
-        "crawler.fetcher.headless.invoke_headless",
+        "crawler.workers.static_worker.invoke_headless",
         returns_error_payload,
     )
 

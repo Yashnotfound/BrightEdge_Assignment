@@ -14,6 +14,7 @@ from aws_lambda_powertools.utilities.batch import (
 from aws_lambda_powertools.utilities.data_classes.sqs_event import SQSRecord
 
 from crawler.config import load_settings
+from crawler.fetcher.headless import invoke_headless
 from crawler.pipeline import extract_pipeline
 from crawler.storage.dynamo import JobsRepo, PagesRepo
 from crawler.storage.s3 import RawHtmlStore
@@ -52,7 +53,6 @@ def _process_one(message_body: dict) -> None:
             and settings.headless_function_name
         ):
             try:
-                from crawler.fetcher.headless import invoke_headless
                 data = invoke_headless(url, persist=True)  # headless persists itself
                 # Defensive guard: if invoke_headless ever returns without
                 # raising on a malformed payload (e.g. an error-shape dict),

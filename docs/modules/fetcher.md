@@ -22,7 +22,7 @@ enough to keep. Also: robots.txt politeness and User-Agent rotation.
 - `crawler.fetcher.static.fetch(url, *, timeout, max_bytes, retries, deadline) -> FetchResult` — async. When `deadline` is set (a `time.monotonic()`-relative absolute timestamp), per-attempt httpx timeouts are clamped to the remaining budget, and retries stop as soon as the budget would not fit one more attempt. This is the contract the route handler relies on to guarantee the fetcher returns before AWS Lambda kills the process on its own 28s ceiling.
 - `crawler.fetcher.static.FetchTimeoutError` — `httpx.TimeoutException` subclass raised when the deadline budget is exhausted (distinct from a network-level timeout).
 - `crawler.fetcher.static.FetchResult` — frozen dataclass: `url`, `final_url`, `http_status`, `content_type`, `html`, `fetched_via`.
-- `crawler.fetcher.headless.invoke_headless(url, *, persist=False) -> dict` — sync; returns the raw `ExtractResult.model_dump(mode="json")` produced by the headless Lambda.
+- `crawler.fetcher.headless.invoke_headless(url, *, persist=False) -> dict` — sync; returns the raw `ExtractResult.model_dump(mode="json")` produced by the headless Lambda. Raises `RuntimeError` when the Lambda response carries `FunctionError`, so error-shaped payloads (`errorType`/`errorMessage`) are never silently returned as if they were ExtractResults.
 - `crawler.fetcher.confidence.score_confidence(*, title, body_word_count, has_structured_data, is_captcha) -> float`.
 - `crawler.fetcher.confidence.is_likely_captcha(title, body) -> bool`.
 - `crawler.fetcher.robots.can_fetch(url, user_agent) -> RobotsDecision`.

@@ -53,7 +53,14 @@ def _process_one(message_body: dict) -> None:
         ):
             try:
                 from crawler.fetcher.headless import invoke_headless
-                invoke_headless(url, persist=True)  # headless persists itself
+                data = invoke_headless(url, persist=True)  # headless persists itself
+                # Defensive guard: if invoke_headless ever returns without
+                # raising on a malformed payload (e.g. an error-shape dict),
+                # don't blindly count it as success. Force the static fallback.
+                if not isinstance(data, dict) or not data.get("url_hash"):
+                    raise RuntimeError(
+                        f"headless returned unusable payload: {str(data)[:300]}"
+                    )
                 if jobs:
                     jobs.increment(job_id=job_id, succeeded=1)
                 return

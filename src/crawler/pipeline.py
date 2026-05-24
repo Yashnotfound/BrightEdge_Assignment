@@ -36,9 +36,20 @@ def _stage(name: str, timings: dict[str, float]) -> Iterator[None]:
         timings[name] = round((time.perf_counter() - t0) * 1000, 3)
 
 
-async def extract_pipeline(url: str, *, return_html: bool = False):
-    """Return ExtractResult by default; (ExtractResult, raw_html) if return_html=True."""
-    fetched = await fetch(url)
+async def extract_pipeline(
+    url: str,
+    *,
+    return_html: bool = False,
+    deadline: float | None = None,
+):
+    """Return ExtractResult by default; (ExtractResult, raw_html) if return_html=True.
+
+    `deadline` is a `time.monotonic()`-relative absolute timestamp. When set,
+    it's forwarded to the static fetcher so per-attempt and retry budgets are
+    bounded — the route handler uses this to guarantee the fetcher returns
+    before AWS Lambda kills the process on its own 28s ceiling.
+    """
+    fetched = await fetch(url, deadline=deadline)
     result = _process(
         url=url, html=fetched.html, http_status=fetched.http_status,
         content_type=fetched.content_type, fetcher_used="static",

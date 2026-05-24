@@ -490,3 +490,124 @@ def test_extract_escalation_failed_on_generic_exception(monkeypatch):
     # Static result preserved.
     assert data["fetcher_used"] == "static"
     assert data["title"] == "Static"
+
+
+# ---------------------------------------------------------------------------
+# Graceful handling of upstream fetch failures (timeouts / firewall blockers)
+# ---------------------------------------------------------------------------
+
+
+def test_extract_returns_degraded_response_when_static_fetch_fails_and_no_headless(
+    monkeypatch,
+):
+    """When the static fetcher errors (timeout, DNS failure, firewall block,
+    etc.) AND no headless function is configured, the API must return 200
+    with a degraded `ExtractResult` (escalation=failed) rather than crashing
+    Lambda with an unhandled exception (which surfaces to the client as a
+    generic API Gateway 500)."""
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.delenv("HEADLESS_FUNCTION_NAME", raising=False)
+
+    from crawler.fetcher.static import FetchTimeoutError
+
+    async def boom(*args, **kwargs):
+        raise FetchTimeoutError("deadline exhausted")
+
+    monkeypatch.setattr("crawler.api.routes.extract_pipeline", boom)
+
+    client = TestClient(app)
+    response = client.post(
+        "/extract",
+        json={"url": "https://www.example-firewall.com/blocked"},
+    )
+
+    # Critical: NOT a 500. The API itself worked; the upstream URL did not.
+    assert response.status_code == 200
+    data = response.json()
+    assert data["fetcher_used"] == "none"
+    assert data["http_status"] == 0
+    assert data["extraction_confidence"] == 0.0
+    assert data["escalation"] == "failed"
+    assert data["escalation_error"] == "fetch_failed:FetchTimeoutError"
+    assert any(
+        e.startswith("static_fetch_failed:FetchTimeoutError") for e in data["errors"]
+    )
+    # No headless was even attempted, so no headless_fetch_failed marker.
+    assert not any(e.startswith("headless_fetch_failed") for e in data["errors"])
+
+
+def test_extract_falls_back_to_headless_when_static_fetch_fails(monkeypatch):
+    """When the static fetcher fails AND headless is configured AND there's
+    enough wall-clock budget left, the route invokes headless as a rescue and
+    returns the headless result with `escalation=succeeded` plus a
+    `reason: static_fetch_failed` marker in escalation_meta. This is exactly
+    the path that should help URLs like REI that timeout from Lambda's IPs
+    but resolve fine through Playwright via a different egress."""
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.setenv("HEADLESS_FUNCTION_NAME", "fake-headless-fn")
+
+    async def boom(*args, **kwargs):
+        raise TimeoutError("simulated static timeout")
+
+    monkeypatch.setattr("crawler.api.routes.extract_pipeline", boom)
+
+    headless_result = ExtractResult(
+        url="https://www.rei.com/blog/x",
+        url_hash="9" * 64,
+        fetched_at=datetime.now(UTC),
+        fetcher_used="headless",
+        http_status=200,
+        title="REI: Indoorsy Friend",
+        extraction_confidence=0.85,
+        word_count=300,
+    )
+    monkeypatch.setattr(
+        "crawler.api.routes.invoke_headless",
+        MagicMock(return_value=headless_result.model_dump(mode="json")),
+    )
+
+    client = TestClient(app)
+    response = client.post(
+        "/extract",
+        json={"url": "https://www.rei.com/blog/x"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["fetcher_used"] == "headless"
+    assert data["extraction_confidence"] == 0.85
+    assert data["title"] == "REI: Indoorsy Friend"
+    assert data["escalation"] == "succeeded"
+    # The `reason` tag is what tells operators "this was a static-failure
+    # rescue", distinct from a normal low-confidence escalation.
+    assert data["escalation_meta"]["reason"] == "static_fetch_failed"
+    assert data["escalation_meta"]["static_error"] == "TimeoutError"
+    assert data["escalation_meta"]["headless_confidence"] == 0.85
+
+
+def test_extract_returns_degraded_when_static_and_headless_both_fail(monkeypatch):
+    """Both fetchers fail → 200 with both error markers and escalation=failed.
+    The client gets enough diagnostic detail to act (e.g., flag the URL as
+    unfetchable) without a generic 5xx."""
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.setenv("HEADLESS_FUNCTION_NAME", "fake-headless-fn")
+
+    async def boom(*args, **kwargs):
+        raise TimeoutError("static dead")
+
+    monkeypatch.setattr("crawler.api.routes.extract_pipeline", boom)
+    monkeypatch.setattr(
+        "crawler.api.routes.invoke_headless",
+        MagicMock(side_effect=RuntimeError("playwright crashed")),
+    )
+
+    client = TestClient(app)
+    response = client.post("/extract", json={"url": "http://blocked.example/"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["fetcher_used"] == "none"
+    assert data["escalation"] == "failed"
+    assert data["escalation_error"] == "fetch_failed:TimeoutError"
+    # Both static and headless markers present so operators can see both legs
+    # of the fallback chain failed.
+    assert any(e.startswith("static_fetch_failed:TimeoutError") for e in data["errors"])
+    assert any(e.startswith("headless_fetch_failed:RuntimeError") for e in data["errors"])

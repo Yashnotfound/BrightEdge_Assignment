@@ -91,3 +91,10 @@ pytest -k classifier
 - New module directory under `src/crawler/`: create `docs/modules/<new>.md`
   using the same five-section template (Purpose, Files, Public API,
   Dependencies, Tests).
+
+## Known gaps
+
+See [`docs/known-gaps.md`](../known-gaps.md) for the running catalog of
+deferred issues — API limitations, worker/pipeline shortcuts, storage
+edge cases, infra quotas, and observability holes. Add new entries
+there when you discover something you cannot fix in the current change.

@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 
 from crawler.api.schemas import ExtractResult
 from crawler.config import load_settings
+from crawler.persist_gate import reject_reason, to_rejected
 from crawler.pipeline import process_html
 from crawler.storage.dynamo import PagesRepo
 from crawler.storage.s3 import RawHtmlStore
@@ -97,20 +98,39 @@ async def _fetch_headless(url: str) -> tuple[str, int]:
             await browser.close()
 
 
-async def _persist_headless(result: ExtractResult, html: str) -> None:
+async def _persist_headless(result: ExtractResult, html: str | None) -> ExtractResult:
     """Mirror of routes._persist for the headless worker: parallel S3 writes,
-    then a DynamoDB write that references the resulting URIs."""
+    then a DynamoDB write that references the resulting URIs.
+
+    Runs the persist gate first: a 4xx/5xx/captcha response is replaced with
+    a rejected marker, the S3 raw-HTML write is skipped, and the DDB row is
+    still written so /pages keeps the audit trail. Returns the result that
+    was actually persisted (may differ from input).
+
+    `html=None` is the skip-S3 sentinel (matches `routes._persist` style); an
+    empty string `""` is a legitimately-empty body that still gets written
+    so the row's `s3_html_uri` reflects what was fetched.
+    """
+    reason = reject_reason(result, html)
+    if reason is not None:
+        result = to_rejected(result, reason)
+        html = None  # sentinel: "skip the S3 raw-HTML write" — distinct from ""
+
     s = load_settings()
     if not s.raw_html_bucket or not s.pages_table:
-        return  # local-dev fallback: skip persistence (matches routes._persist)
+        return result  # local-dev fallback: skip persistence (matches routes._persist)
     store = RawHtmlStore(bucket=s.raw_html_bucket)
     domain = urlsplit(result.url).netloc.lower()
     fetched_iso = result.fetched_at.isoformat()
 
-    html_task = asyncio.to_thread(
-        store.put_raw_html,
-        url_hash=result.url_hash, domain=domain,
-        fetched_at_iso=fetched_iso, html=html,
+    html_task = (
+        asyncio.to_thread(
+            store.put_raw_html,
+            url_hash=result.url_hash, domain=domain,
+            fetched_at_iso=fetched_iso, html=html,
+        )
+        if html is not None
+        else None
     )
     jsonld_task = (
         asyncio.to_thread(
@@ -122,16 +142,23 @@ async def _persist_headless(result: ExtractResult, html: str) -> None:
         else None
     )
 
-    if jsonld_task is not None:
+    if html_task is not None and jsonld_task is not None:
         s3_html_uri, s3_jsonld_uri = await asyncio.gather(html_task, jsonld_task)
-    else:
+    elif html_task is not None:
         s3_html_uri = await html_task
+        s3_jsonld_uri = None
+    elif jsonld_task is not None:
+        s3_html_uri = None
+        s3_jsonld_uri = await jsonld_task
+    else:
+        s3_html_uri = None
         s3_jsonld_uri = None
 
     await asyncio.to_thread(
         PagesRepo(table_name=s.pages_table).put,
         result, s3_html_uri=s3_html_uri, s3_jsonld_uri=s3_jsonld_uri,
     )
+    return result
 
 
 def handler(event: dict, context=None) -> dict:
@@ -146,6 +173,9 @@ def handler(event: dict, context=None) -> dict:
     )
 
     if persist:
-        asyncio.run(_persist_headless(result, html))
+        # _persist_headless may swap `result` for a rejected marker if the
+        # persist gate fires; reflect that in the handler return value so
+        # callers (e.g. routes.extract → invoke_headless) see the rejection.
+        result = asyncio.run(_persist_headless(result, html))
 
     return result.model_dump(mode="json")

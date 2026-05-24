@@ -18,8 +18,23 @@ here because it's the partition key.
 ## Public API
 
 - `crawler.storage.dynamo.PagesRepo(table_name, region_name="us-east-1")` — frozen dataclass.
-  - `put(result, *, s3_html_uri, s3_jsonld_uri) -> None`
-  - `get(*, url_hash) -> ExtractResult | None`
+  - `put(result, *, s3_html_uri, s3_jsonld_uri) -> None` — implemented as
+    `UpdateItem` (not `PutItem`) so concurrent writes to the same row
+    preserve the `counted_job_ids` SET attribute (see below).
+  - `get(*, url_hash) -> ExtractResult | None` — returns `None` for
+    both the no-item case and the "ghost row" case (a row created by
+    `try_claim_for_job` before `put` ran: only `url_hash`, `version`,
+    and `counted_job_ids` are populated, no `url` attribute).
+  - `try_claim_for_job(*, url_hash, job_id) -> bool` — idempotent
+    per-(job, url) claim token used by workers before bumping
+    `JobsRepo.increment`. First call returns True (caller should bump);
+    subsequent calls with the same `job_id` return False so the caller
+    skips the bump. Backed by a `counted_job_ids` DDB String Set
+    attribute on the Pages row, mutated via `ADD ... ReturnValues=ALL_OLD`
+    (atomic). Defeats SQS at-least-once over-counting. Fails OPEN on
+    `ClientError` (e.g. schema drift on `counted_job_ids`): logs a
+    warning and returns True so the SQS record doesn't redeliver-loop
+    into the DLQ — over-count once rather than lose the message.
 - `crawler.storage.dynamo.JobsRepo(table_name, region_name="us-east-1")` — frozen dataclass.
   - `create(*, job_id, total) -> None`
   - `increment(*, job_id, succeeded=0, failed=0) -> None`
@@ -47,6 +62,13 @@ Raw HTML is gzipped (`ContentEncoding: gzip`). JSON-LD is plain JSON.
   `queued → running → partial|complete|failed`.
 
 Items use `_to_decimal_safe` to coerce floats to `Decimal` (DDB requirement).
+
+`PagesRepo.put` writes (and `get` reads back) the `errors` list on the
+result so the persist gate's `persistence_rejected:<reason>` audit tag
+survives the round-trip. The `escalation*` fields and `body_text` are
+intentionally not yet persisted — see
+[`docs/known-gaps.md`](../known-gaps.md) "Async path doesn't propagate
+`escalation*` observability".
 
 ## URL normalization
 

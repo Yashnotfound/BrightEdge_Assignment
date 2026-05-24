@@ -15,6 +15,7 @@ from aws_lambda_powertools.utilities.data_classes.sqs_event import SQSRecord
 
 from crawler.config import load_settings
 from crawler.fetcher.headless import invoke_headless
+from crawler.persist_gate import reject_reason, to_rejected
 from crawler.pipeline import extract_pipeline
 from crawler.storage.dynamo import JobsRepo, PagesRepo
 from crawler.storage.s3 import RawHtmlStore
@@ -61,11 +62,41 @@ def _process_one(message_body: dict) -> None:
                     raise RuntimeError(
                         f"headless returned unusable payload: {str(data)[:300]}"
                     )
-                if jobs:
-                    jobs.increment(job_id=job_id, succeeded=1)
+                # The headless worker runs the persist gate too. If it
+                # classified the page as rejected (Cloudflare, captcha, 5xx,
+                # rate-limit), mirror that on the job counter — rejected
+                # rows are `failed`, not `succeeded`, by the rest of the
+                # gate's semantics.
+                # Gate the counter bump on a per-(job, url) claim token so
+                # SQS at-least-once redeliveries don't double-count. The
+                # Pages row was written by the headless worker; we just
+                # add this job_id to its `counted_job_ids` SET.
+                if jobs and pages.try_claim_for_job(
+                    url_hash=data["url_hash"], job_id=job_id,
+                ):
+                    if data.get("fetcher_used") == "rejected":
+                        jobs.increment(job_id=job_id, failed=1)
+                    else:
+                        jobs.increment(job_id=job_id, succeeded=1)
                 return
             except Exception:  # noqa: BLE001
                 logger.exception("headless escalation failed; keeping static result")
+
+        # Persist-gate: if the result looks like a Cloudflare/CDN block,
+        # rate-limit, or captcha interstitial, replace it with a rejected
+        # marker and bump `failed` instead of `succeeded`. Skips the S3 raw-
+        # HTML write because the body holds no useful content.
+        reason = reject_reason(result, raw_html)
+        if reason is not None:
+            result = to_rejected(result, reason)
+            pages.put(result, s3_html_uri=None, s3_jsonld_uri=None)
+            # Gate the counter bump on a per-(job, url) claim token; see
+            # the escalation branch for the rationale (SQS at-least-once).
+            if jobs and pages.try_claim_for_job(
+                url_hash=result.url_hash, job_id=job_id,
+            ):
+                jobs.increment(job_id=job_id, failed=1)
+            return
 
         domain = urlsplit(result.url).netloc.lower()
         fetched_iso = result.fetched_at.isoformat()
@@ -80,10 +111,23 @@ def _process_one(message_body: dict) -> None:
             ) if result.json_ld else None
         )
         pages.put(result, s3_html_uri=s3_html_uri, s3_jsonld_uri=s3_jsonld_uri)
-        if jobs:
+        # Gate the counter bump on a per-(job, url) claim token so SQS
+        # at-least-once redeliveries don't double-count. ADD on a SET is
+        # idempotent at the DDB layer; we inspect ALL_OLD to decide.
+        if jobs and pages.try_claim_for_job(
+            url_hash=result.url_hash, job_id=job_id,
+        ):
             jobs.increment(job_id=job_id, succeeded=1)
     except Exception:
         logger.exception("static-worker failure on url=%s", url)
+        # TODO(idempotency): the outer-except path runs BEFORE pages.put,
+        # so there is no Pages row to claim against. SQS redelivery here
+        # will over-count `failed` by 1 per retry. Accepted for the PoC
+        # because (a) this branch is rare (only fires on extract_pipeline
+        # raising), and (b) any failure here is already a signal that
+        # the URL needs investigation, so a small counter drift is the
+        # least of our concerns. To fix later: write a minimal "errored"
+        # marker row, then call try_claim_for_job.
         if jobs:
             jobs.increment(job_id=job_id, failed=1)
         raise

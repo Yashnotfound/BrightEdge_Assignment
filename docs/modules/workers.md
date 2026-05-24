@@ -59,10 +59,36 @@ static worker falls through to persist the static result without
 flagging the failure on the row. See the comment block in
 `_process_one` for the deferred work.
 
+## Idempotent counter bumps
+
+SQS delivers each message at-least-once. Without a guard, a worker that
+completes the extract, bumps `JobsRepo.increment`, and then crashes
+before SQS-acking will be redelivered — the second attempt would
+double-count the URL. The static worker calls
+`PagesRepo.try_claim_for_job(url_hash, job_id)` before each
+`jobs.increment(...)` site (escalation-success, normal-persist,
+persist-gate rejection). The claim is an atomic `ADD` to a
+`counted_job_ids` String Set on the Pages row; the first claim returns
+`True` and the bump runs, redelivered claims return `False` and the bump
+is skipped. The outer `except` branch in `_process_one` (extract
+pipeline raised) is deliberately NOT gated — no Pages row exists at that
+point and the path is rare; see the `TODO(idempotency)` comment.
+
+## Persist gate
+
+Both workers run `crawler.persist_gate.reject_reason` right before the
+S3/DDB write. On a 4xx/5xx block or captcha-fingerprint body the result
+is swapped for a rejected marker (`fetcher_used="rejected"`, empty topics,
+zero confidence). The static worker also bumps `failed` (not `succeeded`)
+on its `JobsRepo` so job-completion counters reflect that the extraction
+was garbage. The S3 raw-HTML write is skipped in both paths; the DDB row
+is still written so `/pages` keeps the audit trail.
+
 ## Dependencies
 
 - `crawler.pipeline.extract_pipeline` (static) and `crawler.pipeline.process_html` (headless).
 - `crawler.fetcher.headless.invoke_headless` (static-worker escalation).
+- `crawler.persist_gate` — `reject_reason` / `to_rejected` (filter garbage before DDB).
 - `crawler.storage.dynamo.{PagesRepo,JobsRepo}`, `crawler.storage.s3.RawHtmlStore`.
 - `crawler.config.load_settings`.
 - External: `aws_lambda_powertools` (static), `playwright` (headless; imported lazily inside the handler).

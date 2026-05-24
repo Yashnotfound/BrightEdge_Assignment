@@ -1,14 +1,18 @@
 """DynamoDB Pages and Jobs accessors."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from urllib.parse import urlsplit
 
 import boto3
+from botocore.exceptions import ClientError
 
 from crawler.api.schemas import ExtractResult, JobStatus, Topic
+
+logger = logging.getLogger(__name__)
 
 
 def _resource(region_name: str = "us-east-1"):
@@ -45,9 +49,13 @@ class PagesRepo:
         # lookups return the full schema. Production (per design spec §7.3)
         # moves json_ld to S3 to keep DDB items <8KB; we accept that risk
         # at PoC scale because the test URLs have <2KB JSON-LD each.
-        item = {
-            "url_hash": result.url_hash,
-            "version": 0,
+        #
+        # NB: we use UpdateItem (with SET on every content attribute) rather
+        # than PutItem because PutItem replaces the whole item, which would
+        # wipe the `counted_job_ids` SET that `try_claim_for_job` maintains
+        # for idempotent job-counter bumps across SQS at-least-once
+        # redeliveries. UpdateItem leaves attributes we don't touch alone.
+        attrs = {
             "url": result.url,
             "domain": _domain_of(result.url),
             "fetched_at": result.fetched_at.isoformat(),
@@ -63,18 +71,90 @@ class PagesRepo:
             "jsonld_present": bool(result.json_ld),
             "json_ld": result.json_ld,
             "topics": [t.model_dump() for t in result.topics],
+            "errors": list(result.errors),
             "extraction_confidence": result.extraction_confidence,
             "word_count": result.word_count,
             "s3_html_uri": s3_html_uri,
             "s3_jsonld_uri": s3_jsonld_uri,
             "schema_version": 1,
         }
-        self._table.put_item(Item=_to_decimal_safe(item))
+        attrs = _to_decimal_safe(attrs)
+        # Build "SET #a0 = :v0, #a1 = :v1, ..." — placeholders avoid
+        # collisions with DDB reserved words like `url`, `domain`, `language`.
+        # Index by position rather than by dict iteration so the
+        # placeholders are the single source of truth: a future refactor
+        # that filters `names` or `values` separately can't silently
+        # misalign `#aN` with `:vN`.
+        items = list(attrs.items())
+        names = {f"#a{i}": k for i, (k, _) in enumerate(items)}
+        values = {f":v{i}": v for i, (_, v) in enumerate(items)}
+        set_clause = ", ".join(f"#a{i} = :v{i}" for i in range(len(items)))
+        self._table.update_item(
+            Key={"url_hash": result.url_hash, "version": 0},
+            UpdateExpression=f"SET {set_clause}",
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+
+    def try_claim_for_job(self, *, url_hash: str, job_id: str) -> bool:
+        """Atomically record that ``job_id`` has counted this ``url_hash``.
+
+        Returns True if this is the first time ``job_id`` claimed this
+        ``url_hash`` (caller should bump the job counter). Returns False
+        if ``job_id`` already claimed it (caller should skip the bump).
+
+        Implementation: ``UpdateItem`` with ``ADD counted_job_ids :j`` and
+        ``ReturnValues=ALL_OLD``. ``ADD`` on a SET is idempotent — adding
+        the same member twice leaves the SET unchanged. We inspect the
+        pre-update state (``ALL_OLD``) to detect whether this was a fresh
+        claim.
+
+        Side effects:
+
+        * If the Pages row does not exist, ``UpdateItem`` will create it
+          (with only ``url_hash`` / ``version`` / ``counted_job_ids``).
+          This is an acceptable PoC behaviour: callers normally invoke
+          ``put`` first, so this branch only fires on a worker that
+          crashed before persistence. The over-counted "ghost" row is
+          inert for ``/pages`` reads (no ``fetcher_used``).
+
+        Used by the SQS workers to deduplicate counter bumps across
+        at-least-once re-deliveries — see ``docs/modules/workers.md``.
+        """
+        try:
+            response = self._table.update_item(
+                Key={"url_hash": url_hash, "version": 0},
+                UpdateExpression="ADD counted_job_ids :j",
+                ExpressionAttributeValues={":j": {job_id}},
+                ReturnValues="ALL_OLD",
+            )
+        except ClientError as exc:
+            # Fail OPEN: if the claim row is in an unexpected state
+            # (e.g. `counted_job_ids` was written with a wrong DDB type
+            # by a future schema drift, raising ValidationException),
+            # we'd rather over-count once than have the entire SQS
+            # record fail, redeliver, and eventually DLQ. Over-counting
+            # matches the pre-idempotency behaviour of the workers.
+            logger.warning(
+                "try_claim_for_job failed for url_hash=%s job_id=%s: %s",
+                url_hash, job_id, exc,
+            )
+            return True
+        old_attrs = response.get("Attributes") or {}
+        old_claims = old_attrs.get("counted_job_ids") or set()
+        return job_id not in old_claims
 
     def get(self, *, url_hash: str) -> ExtractResult | None:
         response = self._table.get_item(Key={"url_hash": url_hash, "version": 0})
         item = response.get("Item")
         if not item:
+            return None
+        # Ghost-row guard: `try_claim_for_job` (UpdateItem ADD) creates a
+        # minimal item with only `url_hash` / `version` / `counted_job_ids`
+        # if the row didn't exist yet. `put` always writes `url`, so its
+        # absence is a reliable signal that the row has no content body.
+        # Treat as not-found rather than raising KeyError out of /pages.
+        if "url" not in item:
             return None
         return ExtractResult(
             url=item["url"],
@@ -94,6 +174,7 @@ class PagesRepo:
             word_count=int(item.get("word_count") or 0),
             topics=[Topic(**t) for t in (item.get("topics") or [])],
             extraction_confidence=float(item.get("extraction_confidence") or 0.0),
+            errors=list(item.get("errors") or []),
         )
 
 

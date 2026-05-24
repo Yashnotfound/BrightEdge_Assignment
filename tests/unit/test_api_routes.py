@@ -690,3 +690,80 @@ def test_extract_wait_for_ceiling_falls_back_gracefully(monkeypatch):
     # The ceiling raises asyncio.TimeoutError (alias for builtin TimeoutError
     # since 3.11). Either name in errors[] is acceptable.
     assert data["escalation_error"].startswith("fetch_failed:TimeoutError")
+
+
+# ---------------------------------------------------------------------------
+# Persist gate — reject garbage rows (4xx/5xx/captcha) before they pollute DDB
+# ---------------------------------------------------------------------------
+
+
+def test_extract_rejects_captcha_body_before_persist(monkeypatch):
+    """A 200 with a captcha-fingerprint body must NOT be persisted as real
+    content. The route's response also reflects the rejection so callers
+    can see `fetcher_used="rejected"` instead of bogus topics."""
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.delenv("HEADLESS_FUNCTION_NAME", raising=False)
+    monkeypatch.setenv("PAGES_TABLE", "test-pages")
+    monkeypatch.setenv("RAW_HTML_BUCKET", "test-bucket")
+
+    fake = ExtractResult(
+        url="http://blocked.example/x",
+        url_hash="g" * 64,
+        fetched_at=datetime.now(UTC),
+        fetcher_used="static",
+        http_status=200,
+        title="Just a moment",
+        extraction_confidence=0.7,
+        topics=[Topic(label="captcha", score=0.9, sources=["body"])],
+    )
+    captcha_html = (
+        "<html><body>Please complete the CAPTCHA to continue.</body></html>"
+    )
+    monkeypatch.setattr(
+        "crawler.api.routes.extract_pipeline",
+        AsyncMock(return_value=(fake, captcha_html)),
+    )
+
+    persist_calls: list = []
+
+    def spy_put(self, result, *, s3_html_uri, s3_jsonld_uri):
+        persist_calls.append(
+            {
+                "fetcher_used": result.fetcher_used,
+                "topics": result.topics,
+                "extraction_confidence": result.extraction_confidence,
+                "s3_html_uri": s3_html_uri,
+            }
+        )
+
+    from crawler.storage.dynamo import PagesRepo
+    monkeypatch.setattr(PagesRepo, "put", spy_put)
+
+    s3_put_calls: list = []
+
+    def spy_put_raw_html(self, *, url_hash, domain, fetched_at_iso, html):
+        s3_put_calls.append(url_hash)
+        return f"s3://x/{url_hash}"
+
+    from crawler.storage.s3 import RawHtmlStore
+    monkeypatch.setattr(RawHtmlStore, "put_raw_html", spy_put_raw_html)
+
+    client = TestClient(app)
+    response = client.post("/extract", json={"url": "http://blocked.example/x"})
+
+    assert response.status_code == 200
+    data = response.json()
+    # Response reflects the rejection.
+    assert data["fetcher_used"] == "rejected"
+    assert data["extraction_confidence"] == 0.0
+    assert data["topics"] == []
+    assert any(e.startswith("persistence_rejected:captcha") for e in data["errors"])
+
+    # DDB row was persisted (audit trail), but as a marker.
+    assert len(persist_calls) == 1
+    assert persist_calls[0]["fetcher_used"] == "rejected"
+    assert persist_calls[0]["topics"] == []
+    assert persist_calls[0]["extraction_confidence"] == 0.0
+    # S3 raw HTML write skipped — no useful content to store.
+    assert persist_calls[0]["s3_html_uri"] is None
+    assert s3_put_calls == []

@@ -6,7 +6,6 @@ import json
 import logging
 import time
 import uuid
-from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
 import boto3
@@ -23,7 +22,7 @@ from crawler.api.schemas import (
 )
 from crawler.config import load_settings
 from crawler.fetcher.headless import invoke_headless
-from crawler.persist_gate import reject_reason, to_rejected
+from crawler.persist_gate import build_fetch_failed_result, reject_reason, to_rejected
 from crawler.pipeline import extract_pipeline
 from crawler.storage.dynamo import JobsRepo, PagesRepo
 from crawler.storage.hashing import url_hash as _url_hash
@@ -112,34 +111,6 @@ async def _persist(result: ExtractResult, html: str | None) -> ExtractResult:
         result, s3_html_uri=s3_html_uri, s3_jsonld_uri=s3_jsonld_uri,
     )
     return result
-
-
-def _degraded_result(
-    url: str,
-    static_exc: BaseException,
-    headless_exc: BaseException | None,
-) -> ExtractResult:
-    """Build an `ExtractResult` for the case where every fetcher failed.
-
-    Returned with HTTP 200 (not 5xx) because the API itself worked — the
-    upstream URL is what we couldn't reach. Clients should inspect
-    `escalation == "failed"` (and the `errors` list) to detect this case
-    instead of treating it as a successful crawl.
-    """
-    errors = [f"static_fetch_failed:{type(static_exc).__name__}"]
-    if headless_exc is not None:
-        errors.append(f"headless_fetch_failed:{type(headless_exc).__name__}")
-    return ExtractResult(
-        url=url,
-        url_hash=_url_hash(url),
-        fetched_at=datetime.now(UTC),
-        fetcher_used="none",
-        http_status=0,
-        extraction_confidence=0.0,
-        errors=errors,
-        escalation="failed",
-        escalation_error=f"fetch_failed:{type(static_exc).__name__}",
-    )
 
 
 async def _try_headless_fallback(
@@ -267,7 +238,7 @@ async def extract(
         )
         if rescue is not None:
             return rescue
-        return _degraded_result(req.url, static_exc, headless_exc)
+        return build_fetch_failed_result(req.url, static_exc, headless_exc)
 
     # ─── Static fetch succeeded ─────────────────────────────────────────────
     # Existing low-confidence escalation gate. `result` is guaranteed non-None

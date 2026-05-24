@@ -43,43 +43,17 @@ observed data and is not derived from a labeled dataset.
   hand-label real vs garbage, fit a logistic-regression-style threshold.
   Per-domain overrides for the worst offenders (Cloudflare-fronted SaaS).
 
-### Sync `/extract` has graceful fetch-failure; static worker does not
-
-The sync `/extract` route catches `ConnectError`, DNS failures, and firewall
-blocks at the fetcher level and returns a 200 with a degraded
-`ExtractResult` (`fetcher_used="none"`, `escalation="failed"`). The async
-`static_worker._process_one` re-raises any pipeline exception, which sends
-the SQS message back for redelivery; after max attempts it goes to the DLQ.
-
-- **Impact:** A URL the static fetcher cannot reach (api.coindesk.com,
-  netflixtechblog.com, eng.lyft.com in the 1000-URL run) ends up with no
-  row in DDB and a `failed=1` increment per retry attempt — the message
-  burns SQS receives instead of being persisted as a degraded marker.
-- **Code:** [src/crawler/workers/static_worker.py:121-133](src/crawler/workers/static_worker.py:121)
-  (the outer `except Exception:` re-raises).
-- **Direction:** Build a degraded `ExtractResult` (mirroring routes.py's
-  `_degraded_result`) and feed it through the persist gate. The rejection
-  marker captures the failure and stops the SQS retry storm.
+### [RESOLVED] Sync `/extract` has graceful fetch-failure; static worker does not
+Static worker now persists a degraded fetch-failed marker row and stops
+re-raising. Two-paragraph original entry replaced by this stub.
 
 ---
 
 ## Worker / pipeline
 
-### Outer-except path in `_process_one` is not idempotency-gated
-
-`PagesRepo.try_claim_for_job` requires the Pages row to exist. The outer
-`except Exception:` branch runs when `extract_pipeline` raises BEFORE any
-`pages.put`, so there is no row to claim against. The `failed=1` increment
-in that branch can over-count on SQS redelivery.
-
-- **Impact:** A pipeline-crashing URL in a 1000-URL job can inflate
-  `failed` by up to SQS `maxReceiveCount` (default 3). Bounded; not as bad
-  as the prior `succeeded` over-count, but real.
-- **Code:** [src/crawler/workers/static_worker.py:121-133](src/crawler/workers/static_worker.py:121)
-  with a `TODO(idempotency)` comment.
-- **Direction:** Coupled with the graceful fetch-failure fix above —
-  if we persist a degraded marker for fetch failures, this branch
-  disappears entirely and the gated path handles it.
+### [RESOLVED] Outer-except path in `_process_one` is not idempotency-gated
+`failed=1` increment now gated behind `try_claim_for_job` via the degraded
+marker row, so SQS redelivery cannot double-count.
 
 ### Async path doesn't propagate `escalation*` observability
 
@@ -236,9 +210,10 @@ prod-readiness gate but not built.
 
 - No end-to-end test runs against a deployed stack in CI. Smoke tests in
   `scripts/smoke.sh` are manual.
-- `tests/eval/` accuracy regression suite covers only the 3 hand-curated
-  fixture URLs (Amazon, REI, CNN). No broader URL diversity in the eval
-  set.
+- `tests/eval/` accuracy regression suite has 19 fixtures across
+  English/non-English content, product, encyclopedia, recipe, and
+  developer-doc domains; broader URL diversity (especially long-tail
+  SaaS, CMS-templated blogs, paywalled news) is still missing.
 - The persist-gate's rejection-marker rows are not yet exercised by the
   eval suite — should add fixtures for "Cloudflare 403" / "Cloudflare
   202 interstitial" / "rate limit 429" so future regressions on the gate
@@ -250,5 +225,8 @@ prod-readiness gate but not built.
 
 Append a new entry whenever you encounter an issue you cannot fix in the
 current change. Each entry needs: title, impact, code/infra pointer,
-direction. Mark resolved entries as `[RESOLVED in <SHA>]` and leave them
-for one quarter before deleting, so reviewers can see what was retired.
+direction. Mark resolved entries as `### [RESOLVED] <title>` with a one-
+to-two-line stub describing the fix; leave them for one quarter before
+deleting so reviewers can see what was retired. The `git log` on this
+file is the SHA-level audit trail — avoid embedding SHAs in entry titles
+because amends and rebases drift them.

@@ -6,17 +6,31 @@ Cloudflare 'Access Denied' bodies, 429 rate-limit interstitials, and the
 "topics" like ["captcha", "access denied"] that polluted `/pages/by-topic`
 queries. This module is the boundary check that catches those.
 
-The two helpers here are pure: no I/O, no global state. They run inside
-both worker paths (`workers.static_worker`, `workers.headless_worker`) and
-the sync `/extract` route (`api.routes._persist`). Each caller is
+The helpers here perform no AWS I/O — they shape `ExtractResult` values
+for callers that own the actual DDB/S3 writes. `build_fetch_failed_result`
+does read the wall clock via `datetime.now(UTC)`; the gate decision
+helpers (`reject_reason`, `to_rejected`) are fully pure. They run inside
+both worker paths (`workers.static_worker`, `workers.headless_worker`)
+and the sync `/extract` route (`api.routes._persist`). Each caller is
 responsible for skipping the S3 raw-HTML write and (for the workers)
 bumping `failed` instead of `succeeded` on the JobsRepo when the gate
 fires.
+
+`build_fetch_failed_result` is the sibling shape used when no fetcher
+returned anything at all (ConnectError, DNS failure, ReadTimeout, firewall
+block). It produces a degraded `ExtractResult` with `fetcher_used="none"`,
+`http_status=0`, `escalation="failed"`. The sync `/extract` route returns
+it to the client (without persisting), while the static SQS worker
+persists it as a marker row so SQS at-least-once redelivery doesn't
+hammer the same unreachable URL.
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from crawler.api.schemas import ExtractResult
 from crawler.fetcher.confidence import is_likely_captcha
+from crawler.storage.hashing import url_hash as _url_hash
 
 # HTTP status codes that signal an operational failure (5xx) or a client-side
 # block (selected 4xx). 404 is deliberately omitted — an honest "page doesn't
@@ -104,4 +118,33 @@ def to_rejected(result: ExtractResult, reason: str) -> ExtractResult:
             "json_ld": [],
             "errors": [f"persistence_rejected:{reason}", *result.errors],
         }
+    )
+
+
+def build_fetch_failed_result(
+    url: str,
+    static_exc: BaseException,
+    headless_exc: BaseException | None = None,
+) -> ExtractResult:
+    """Construct an ExtractResult representing a fully-failed fetch.
+
+    `fetcher_used="none"`, `http_status=0`, `extraction_confidence=0.0`,
+    `escalation="failed"`, with the exception class names captured in
+    `errors[]` and `escalation_error`. Used by both the sync `/extract`
+    route (returned to the client, NOT persisted) and the static SQS
+    worker (persisted as a fetch-failed marker so SQS redelivery stops).
+    """
+    errors = [f"static_fetch_failed:{type(static_exc).__name__}"]
+    if headless_exc is not None:
+        errors.append(f"headless_fetch_failed:{type(headless_exc).__name__}")
+    return ExtractResult(
+        url=url,
+        url_hash=_url_hash(url),
+        fetched_at=datetime.now(UTC),
+        fetcher_used="none",
+        http_status=0,
+        extraction_confidence=0.0,
+        errors=errors,
+        escalation="failed",
+        escalation_error=f"fetch_failed:{type(static_exc).__name__}",
     )

@@ -135,6 +135,27 @@ Three signal layers fused into a ranked top-10:
 See [src/crawler/classifier/](src/crawler/classifier/) and Part 2 §3 for
 detailed weighting.
 
+### Classifier accuracy
+
+Measured by the eval harness in
+[`tests/eval/test_topic_accuracy.py`](tests/eval/test_topic_accuracy.py),
+which runs the full pipeline against the labeled fixtures in
+[`tests/eval/fixtures.yaml`](tests/eval/fixtures.yaml) and compares against
+[`tests/eval/baseline.json`](tests/eval/baseline.json). The harness is
+wired into `pytest` and fails CI if any metric regresses by more than
+0.05 absolute.
+
+| Metric | Value | What it measures |
+|---|---|---|
+| top-1 hit rate | 94.7% | Top-ranked topic matches an expected label |
+| top-3 hit rate | 59.7% | Avg coverage of expected labels in top 3 |
+| MRR | 97.4% | Mean reciprocal rank of first relevant topic |
+| n | 19 | Labeled fixtures (Amazon, REI, CNN, Wikipedia en/es/de/fr, GitHub, MDN, StackOverflow, arXiv, recipes, …) |
+
+Top-3 sits below 1.0 because most cases label 2–3 expected topics and the
+classifier rarely surfaces all of them in three slots — this is a recall
+ceiling driven by label cardinality, not a model failure.
+
 ## Anti-bot handling
 
 Amazon aggressively blocks scrapers. The crawler:

@@ -232,5 +232,42 @@ def test_jobs_lifecycle(ddb_tables):
     assert status.status == "running"
     repo.increment(job_id="j1", succeeded=1)
     status = repo.get(job_id="j1")
-    # total=3, succeeded=2, failed=1 → partial (any failures → partial)
+    # total=3, succeeded=2, failed=1 → partial (mixed outcome)
     assert status.status == "partial"
+
+
+def test_jobs_terminal_status_all_succeeded_is_complete(ddb_tables):
+    """succeeded == total and failed == 0 → ``complete``."""
+    _, jobs = ddb_tables
+    repo = JobsRepo(table_name=jobs)
+    repo.create(job_id="j-complete", total=3)
+    repo.increment(job_id="j-complete", succeeded=3)
+    status = repo.get(job_id="j-complete")
+    assert status.status == "complete"
+    assert status.succeeded == 3
+    assert status.failed == 0
+
+
+def test_jobs_terminal_status_all_failed_is_failed(ddb_tables):
+    """failed == total and succeeded == 0 → ``failed`` (regression for the
+    bug where this case incorrectly reported ``partial``)."""
+    _, jobs = ddb_tables
+    repo = JobsRepo(table_name=jobs)
+    repo.create(job_id="j-failed", total=2)
+    repo.increment(job_id="j-failed", failed=2)
+    status = repo.get(job_id="j-failed")
+    assert status.status == "failed"
+    assert status.succeeded == 0
+    assert status.failed == 2
+
+
+def test_jobs_terminal_status_mixed_is_partial(ddb_tables):
+    """Both succeeded >= 1 and failed >= 1 with sum == total → ``partial``."""
+    _, jobs = ddb_tables
+    repo = JobsRepo(table_name=jobs)
+    repo.create(job_id="j-partial", total=4)
+    repo.increment(job_id="j-partial", succeeded=3, failed=1)
+    status = repo.get(job_id="j-partial")
+    assert status.status == "partial"
+    assert status.succeeded == 3
+    assert status.failed == 1

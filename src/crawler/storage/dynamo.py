@@ -206,8 +206,15 @@ class JobsRepo:
         )
         # Recompute status
         status = self.get(job_id=job_id)
+        if status is None:
+            return
         if status.succeeded + status.failed >= status.total:
-            new_status = "complete" if status.failed == 0 else "partial"
+            if status.failed == 0:
+                new_status = "complete"
+            elif status.succeeded == 0:
+                new_status = "failed"
+            else:
+                new_status = "partial"
             self._set_status(job_id, new_status)
         elif status.succeeded + status.failed > 0:
             self._set_status(job_id, "running")

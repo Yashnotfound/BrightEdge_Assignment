@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from urllib.parse import urlsplit
 
 import boto3
+from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from crawler.api.auth import require_api_key
@@ -23,6 +25,8 @@ from crawler.pipeline import extract_pipeline
 from crawler.storage.dynamo import JobsRepo, PagesRepo
 from crawler.storage.hashing import url_hash as _url_hash
 from crawler.storage.s3 import RawHtmlStore
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -112,18 +116,42 @@ async def extract(
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"fetch failed: {exc}") from exc
 
-    if (
-        result.extraction_confidence < settings.confidence_threshold
-        and settings.headless_function_name
-    ):
-        try:
-            data = invoke_headless(req.url, persist=False)
-            headless_result = ExtractResult(**data)
-            if headless_result.extraction_confidence > result.extraction_confidence:
-                result = headless_result
-                raw_html = None  # headless wrote its own copy (or persist=False)
-        except Exception:  # noqa: BLE001, S110 - degrade gracefully to static result
-            pass
+    if result.extraction_confidence < settings.confidence_threshold:
+        if not settings.headless_function_name:
+            result.escalation = "skipped"
+        else:
+            try:
+                data = invoke_headless(req.url, persist=False)
+                headless_result = ExtractResult(**data)
+                headless_meta = {
+                    "headless_confidence": headless_result.extraction_confidence,
+                    "headless_word_count": headless_result.word_count,
+                }
+                if headless_result.extraction_confidence > result.extraction_confidence:
+                    result = headless_result
+                    result.escalation = "succeeded"
+                    result.escalation_meta = headless_meta
+                    raw_html = None  # headless wrote its own copy (or persist=False)
+                else:
+                    result.escalation = "no_improvement"
+                    result.escalation_meta = headless_meta
+            except ClientError as exc:
+                # Lambda Invoke-level failure (throttled, function offline, IAM).
+                # Surface only the error CODE (not the message body) — codes are
+                # bounded enums; messages may include account IDs or ARNs.
+                code = exc.response.get("Error", {}).get("Code", "")
+                result.escalation = "failed"
+                result.escalation_error = f"lambda:{code}" if code else "lambda:ClientError"
+                logger.warning("headless escalation failed: lambda:%s", code or "ClientError")
+            except Exception as exc:  # noqa: BLE001 - degrade gracefully to static result
+                # Anything else (ValidationError from a malformed headless payload,
+                # network timeout while reading the response, etc.). Return ONLY the
+                # exception class name to the client; full traceback goes to logs.
+                # Avoids leaking Pydantic schema details or internal paths into the
+                # user-facing response body.
+                result.escalation = "failed"
+                result.escalation_error = type(exc).__name__
+                logger.exception("headless escalation failed: %s", type(exc).__name__)
 
     try:
         if raw_html is not None:

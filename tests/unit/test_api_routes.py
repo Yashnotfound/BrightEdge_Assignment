@@ -1,7 +1,10 @@
 """Smoke tests for the FastAPI app."""
-from datetime import UTC, datetime
-from unittest.mock import AsyncMock
+from __future__ import annotations
 
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
+
+from botocore.exceptions import ClientError
 from fastapi.testclient import TestClient
 
 from crawler.api.main import app
@@ -269,3 +272,221 @@ def test_extract_fixture_mode_ignored_for_non_amazon(monkeypatch):
     )
     assert response.status_code == 200
     assert response.json()["fetcher_used"] == "static"  # fixture didn't trigger
+
+
+# ---------------------------------------------------------------------------
+# Escalation tracking — sync /extract path
+# ---------------------------------------------------------------------------
+
+
+def test_extract_escalation_not_attempted_on_high_confidence(monkeypatch):
+    """Confidence above threshold → no escalation attempted."""
+    monkeypatch.delenv("API_KEY", raising=False)
+    fake = ExtractResult(
+        url="http://example.com",
+        url_hash="f" * 64,
+        fetched_at=datetime.now(UTC),
+        fetcher_used="static",
+        http_status=200,
+        extraction_confidence=0.9,
+    )
+    monkeypatch.setattr(
+        "crawler.api.routes.extract_pipeline",
+        AsyncMock(return_value=(fake, "<html></html>")),
+    )
+    client = TestClient(app)
+    response = client.post("/extract", json={"url": "http://example.com"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["escalation"] == "not_attempted"
+    assert data["escalation_meta"] == {}
+    assert data["escalation_error"] is None
+
+
+def test_extract_escalation_skipped_when_headless_unconfigured(monkeypatch):
+    """Low confidence + no HEADLESS_FUNCTION_NAME → skipped."""
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.delenv("HEADLESS_FUNCTION_NAME", raising=False)
+    fake = ExtractResult(
+        url="http://example.com",
+        url_hash="1" * 64,
+        fetched_at=datetime.now(UTC),
+        fetcher_used="static",
+        http_status=200,
+        extraction_confidence=0.3,
+    )
+    monkeypatch.setattr(
+        "crawler.api.routes.extract_pipeline",
+        AsyncMock(return_value=(fake, "<html></html>")),
+    )
+    client = TestClient(app)
+    response = client.post("/extract", json={"url": "http://example.com"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["escalation"] == "skipped"
+    assert data["escalation_meta"] == {}
+    assert data["escalation_error"] is None
+
+
+def test_extract_escalation_succeeded_when_headless_beats_static(monkeypatch):
+    """Low static confidence + headless wins → succeeded + result swapped."""
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.setenv("HEADLESS_FUNCTION_NAME", "fake-headless-fn")
+    static_result = ExtractResult(
+        url="http://example.com",
+        url_hash="2" * 64,
+        fetched_at=datetime.now(UTC),
+        fetcher_used="static",
+        http_status=200,
+        title="Static",
+        extraction_confidence=0.3,
+        word_count=10,
+    )
+    headless_result = ExtractResult(
+        url="http://example.com",
+        url_hash="2" * 64,
+        fetched_at=datetime.now(UTC),
+        fetcher_used="headless",
+        http_status=200,
+        title="Headless",
+        extraction_confidence=0.9,
+        word_count=500,
+    )
+    monkeypatch.setattr(
+        "crawler.api.routes.extract_pipeline",
+        AsyncMock(return_value=(static_result, "<html></html>")),
+    )
+    monkeypatch.setattr(
+        "crawler.api.routes.invoke_headless",
+        MagicMock(return_value=headless_result.model_dump(mode="json")),
+    )
+    client = TestClient(app)
+    response = client.post("/extract", json={"url": "http://example.com"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["escalation"] == "succeeded"
+    assert data["escalation_meta"]["headless_confidence"] == 0.9
+    assert data["escalation_meta"]["headless_word_count"] == 500
+    assert data["fetcher_used"] == "headless"
+    assert data["title"] == "Headless"
+    assert data["escalation_error"] is None
+
+
+def test_extract_escalation_no_improvement_when_headless_equal_or_lower(monkeypatch):
+    """Headless returned but did not beat static → no_improvement + keep static."""
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.setenv("HEADLESS_FUNCTION_NAME", "fake-headless-fn")
+    static_result = ExtractResult(
+        url="http://example.com",
+        url_hash="3" * 64,
+        fetched_at=datetime.now(UTC),
+        fetcher_used="static",
+        http_status=200,
+        title="Static",
+        extraction_confidence=0.3,
+        word_count=10,
+    )
+    headless_result = ExtractResult(
+        url="http://example.com",
+        url_hash="3" * 64,
+        fetched_at=datetime.now(UTC),
+        fetcher_used="headless",
+        http_status=200,
+        title="Headless",
+        extraction_confidence=0.3,
+        word_count=25,
+    )
+    monkeypatch.setattr(
+        "crawler.api.routes.extract_pipeline",
+        AsyncMock(return_value=(static_result, "<html></html>")),
+    )
+    monkeypatch.setattr(
+        "crawler.api.routes.invoke_headless",
+        MagicMock(return_value=headless_result.model_dump(mode="json")),
+    )
+    client = TestClient(app)
+    response = client.post("/extract", json={"url": "http://example.com"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["escalation"] == "no_improvement"
+    assert data["escalation_meta"]["headless_confidence"] == 0.3
+    assert data["escalation_meta"]["headless_word_count"] == 25
+    # Static result preserved
+    assert data["fetcher_used"] == "static"
+    assert data["title"] == "Static"
+    assert data["escalation_error"] is None
+
+
+def test_extract_escalation_failed_captures_error(monkeypatch):
+    """ClientError on invoke_headless → failed + escalation_error tag."""
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.setenv("HEADLESS_FUNCTION_NAME", "fake-headless-fn")
+    static_result = ExtractResult(
+        url="http://example.com",
+        url_hash="4" * 64,
+        fetched_at=datetime.now(UTC),
+        fetcher_used="static",
+        http_status=200,
+        title="Static",
+        extraction_confidence=0.3,
+    )
+    monkeypatch.setattr(
+        "crawler.api.routes.extract_pipeline",
+        AsyncMock(return_value=(static_result, "<html></html>")),
+    )
+    err = ClientError({"Error": {"Code": "TooManyRequestsException"}}, "Invoke")
+    monkeypatch.setattr(
+        "crawler.api.routes.invoke_headless",
+        MagicMock(side_effect=err),
+    )
+    client = TestClient(app)
+    response = client.post("/extract", json={"url": "http://example.com"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["escalation"] == "failed"
+    assert data["escalation_error"].startswith("lambda:")
+    assert "TooManyRequestsException" in data["escalation_error"]
+    # Static result preserved
+    assert data["fetcher_used"] == "static"
+    assert data["title"] == "Static"
+
+
+def test_extract_escalation_failed_on_generic_exception(monkeypatch):
+    """Non-AWS exception on invoke_headless (e.g., timeout, malformed payload) →
+    failed + escalation_error contains ONLY the exception class name (no message
+    body), so we never leak Pydantic ValidationError internals or internal
+    paths to the client."""
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.setenv("HEADLESS_FUNCTION_NAME", "fake-headless-fn")
+    static_result = ExtractResult(
+        url="http://example.com",
+        url_hash="5" * 64,
+        fetched_at=datetime.now(UTC),
+        fetcher_used="static",
+        http_status=200,
+        title="Static",
+        extraction_confidence=0.3,
+    )
+    monkeypatch.setattr(
+        "crawler.api.routes.extract_pipeline",
+        AsyncMock(return_value=(static_result, "<html></html>")),
+    )
+    # Simulate e.g. a socket timeout reading the Lambda response payload —
+    # message includes a path-like detail that should NOT appear in the
+    # client-facing response.
+    sensitive = "/var/task/internal-secret-path: connection reset by peer"
+    monkeypatch.setattr(
+        "crawler.api.routes.invoke_headless",
+        MagicMock(side_effect=TimeoutError(sensitive)),
+    )
+    client = TestClient(app)
+    response = client.post("/extract", json={"url": "http://example.com"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["escalation"] == "failed"
+    # ONLY the class name is exposed — message content is logged server-side.
+    assert data["escalation_error"] == "TimeoutError"
+    assert sensitive not in data["escalation_error"]
+    # Static result preserved.
+    assert data["fetcher_used"] == "static"
+    assert data["title"] == "Static"

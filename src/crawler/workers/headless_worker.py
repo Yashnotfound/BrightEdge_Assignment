@@ -74,7 +74,22 @@ async def _fetch_headless(url: str) -> tuple[str, int]:
                 locale="en-US",
             )
             page = await context.new_page()
-            response = await page.goto(url, wait_until="domcontentloaded", timeout=10000)
+            # `networkidle` waits for the network to be quiet for ~500ms — the right
+            # primitive for SPAs (React/Vue/etc.) whose content paints AFTER initial
+            # DOM parse. Bounded by `timeout` so a page with long-polling websockets
+            # can't hang the worker.
+            response = await page.goto(url, wait_until="networkidle", timeout=15000)
+            # Even after networkidle, give the framework one more beat to actually
+            # render text into the body. Caps headless wait at ~18s total worst-case;
+            # Lambda timeout is 60s so we still have plenty of headroom for parse +
+            # classify downstream.
+            try:
+                await page.wait_for_function(
+                    "() => document.body && document.body.innerText.trim().length > 200",
+                    timeout=3000,
+                )
+            except Exception:  # noqa: BLE001, S110 - thin SPA / auth wall / static page — accept what we have
+                pass
             html = await page.content()
             status = response.status if response else 200
             return html, status

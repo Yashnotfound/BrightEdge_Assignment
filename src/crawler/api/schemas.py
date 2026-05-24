@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -32,6 +32,11 @@ class ExtractResult(BaseModel):
     topics: list[Topic] = Field(default_factory=list)
     extraction_confidence: float = 0.0
     errors: list[str] = Field(default_factory=list)
+    escalation: Literal[
+        "not_attempted", "skipped", "succeeded", "no_improvement", "failed"
+    ] = "not_attempted"
+    escalation_error: str | None = None
+    escalation_meta: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExtractRequest(BaseModel):

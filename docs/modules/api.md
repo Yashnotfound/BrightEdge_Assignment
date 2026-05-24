@@ -27,6 +27,20 @@ and the in-process result type.
   calls send the header automatically).
 - `crawler.api.schemas.ExtractResult` — single source of truth for the
   extract response shape; also used internally by the pipeline.
+  Carries three diagnostic fields populated by the sync `/extract`
+  handler:
+  - `escalation: Literal["not_attempted","skipped","succeeded","no_improvement","failed"]`
+    — what the system did about the low-confidence static result.
+    Default `"not_attempted"` is set when static confidence ≥
+    `CONFIDENCE_THRESHOLD`.
+  - `escalation_error: str | None` — short tag like
+    `"lambda:TooManyRequestsException"` or `"TimeoutError"`. Only the
+    exception class / Lambda error code is exposed; full traceback goes
+    to CloudWatch via `logger.exception` rather than into the response
+    body.
+  - `escalation_meta: dict[str, Any]` — `{"headless_confidence":
+    float, "headless_word_count": int}` populated whenever headless
+    was attempted (success OR no-improvement). Empty dict otherwise.
 
 ## Routes (current)
 

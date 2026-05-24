@@ -35,7 +35,18 @@ def _process_one(message_body: dict) -> None:
     try:
         result, raw_html = asyncio.run(extract_pipeline(url, return_html=True))
 
-        # Escalate to headless if confidence is low and headless is configured
+        # Escalate to headless if confidence is low and headless is configured.
+        #
+        # Note (escalation observability): the sync `POST /extract` path
+        # populates `result.escalation` / `escalation_meta` / `escalation_error`
+        # so callers can see what the system did. The async path here does
+        # NOT mirror that yet — when headless succeeds, the headless worker
+        # persists its OWN ExtractResult (with the default `escalation:
+        # "not_attempted"`), and when escalation fails we fall through to
+        # persist the static result without flagging the failure. Wiring this
+        # through requires either passing an `escalated_from` hint into
+        # `invoke_headless` or post-updating the persisted row — both are
+        # bigger changes deliberately deferred from the sync-path fix.
         if (
             result.extraction_confidence < settings.confidence_threshold
             and settings.headless_function_name

@@ -21,4 +21,13 @@ def invoke_headless(url: str, *, persist: bool = False) -> dict[str, Any]:
         Payload=json.dumps({"url": url, "persist": persist}).encode("utf-8"),
     )
     payload = response["Payload"].read()
+    # When the headless handler raises, the Lambda control plane returns a
+    # 200 with `FunctionError` set and an error-shaped payload (errorType /
+    # errorMessage / stackTrace), NOT an ExtractResult. Surface that as an
+    # exception so callers don't blindly treat the error payload as success.
+    if response.get("FunctionError"):
+        excerpt = payload.decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(
+            f"headless Lambda errored ({response['FunctionError']}): {excerpt}"
+        )
     return json.loads(payload)

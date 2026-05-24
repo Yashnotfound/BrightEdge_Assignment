@@ -59,7 +59,10 @@ Raw HTML is gzipped (`ContentEncoding: gzip`). JSON-LD is plain JSON.
 - **Pages table**: HASH `url_hash` + RANGE `version` (always `0` at PoC).
   GSI `by-domain` (HASH `domain`, RANGE `fetched_at`).
 - **Jobs table**: HASH `job_id`. Status moves
-  `queued → running → partial|complete|failed`.
+  `queued → running → partial|complete|failed`. The terminal state is
+  chosen by `JobsRepo.increment` once `succeeded + failed >= total`:
+  `complete` when `failed == 0`, `failed` when `succeeded == 0`, and
+  `partial` only when both counters are non-zero (mixed outcome).
 
 Items use `_to_decimal_safe` to coerce floats to `Decimal` (DDB requirement).
 

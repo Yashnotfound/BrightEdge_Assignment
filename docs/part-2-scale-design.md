@@ -89,6 +89,25 @@ s3://crawler-prod/
 
 **Lifecycle:** raw HTML → IA at 30d → Glacier Deep Archive at 90d ($0.00099/GB). Parquet stays in Standard. DDB Pages retain latest version forever; older versions migrate to Parquet only.
 
+### 3.1 Current classifier accuracy
+
+The PoC ships with an eval harness
+(`tests/eval/test_topic_accuracy.py`) that runs the full pipeline against
+19 labeled HTML fixtures (`tests/eval/fixtures.yaml`) and compares against
+a checked-in baseline (`tests/eval/baseline.json`). The harness is part of
+the pytest suite and fails CI on any > 0.05 absolute regression.
+
+| Metric | Value | What it measures |
+|---|---|---|
+| top-1 hit rate | 94.7% | Top-ranked topic matches an expected label |
+| top-3 hit rate | 59.7% | Avg coverage of expected labels in top 3 |
+| MRR | 97.4% | Mean reciprocal rank of first relevant topic |
+| n | 19 | Amazon, REI, CNN, Wikipedia en/es/de/fr, GitHub, MDN, StackOverflow, arXiv, recipes |
+
+Expanding the labeled set (and adding per-domain accuracy slices) is a
+Phase 3 (Quality) deliverable in [Part 3](part-3-poc-plan.md) — see the
+"Classifier eval harness" line in §2 and the Phase 3 row in §1.
+
 ## 4. Ingest, politeness, escalation
 
 - **Ingest Lambda** is S3-event-triggered; streams the URL list, normalizes (lowercase host, strip fragments, sort query params), hashes, upserts into Frontier with `status=queued` only for new hashes. Existing hashes bump `last_seen` only.

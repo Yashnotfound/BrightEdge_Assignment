@@ -11,7 +11,7 @@ direct-invoked and runs Playwright/chromium inside a container image.
 | File | One-liner |
 |---|---|
 | `static_worker.py` | SQS-triggered batch processor; calls `pipeline.extract_pipeline`, persists to S3+DDB, bumps job counters. |
-| `headless_worker.py` | Direct-invoke (`{url, persist?}`); fetches HTML via Playwright pointed at sparticuz/chromium (`CHROMIUM_EXECUTABLE` env var = `/opt/chromium/chromium`), Lambda-hardened launch flags, `wait_until="domcontentloaded"`, 10s page-load timeout, then runs `pipeline.process_html`. |
+| `headless_worker.py` | Direct-invoke (`{url, persist?}`); fetches HTML via Playwright pointed at sparticuz/chromium (`CHROMIUM_EXECUTABLE` env var = `/opt/chromium/chromium`), Lambda-hardened launch flags, `wait_until="networkidle"` with a 15s page-load timeout followed by a bounded `wait_for_function` poll for `document.body.innerText.length > 200` (3s cap) so React/Vue SPAs have a chance to hydrate, then runs `pipeline.process_html`. Worst-case wait is ~18s; Lambda timeout is 60s. |
 | `__init__.py` | Empty marker. |
 
 ## Public API
@@ -47,6 +47,17 @@ when the static `extraction_confidence` is below
 `settings.confidence_threshold` and `HEADLESS_FUNCTION_NAME` is set.
 Headless persists itself in that path, so the static worker skips its
 own persist on successful escalation.
+
+**Observability note:** the sync `POST /extract` path tracks escalation
+outcome on the response via `ExtractResult.escalation` /
+`escalation_meta` / `escalation_error` (5 states: `not_attempted`,
+`skipped`, `succeeded`, `no_improvement`, `failed`). The async path
+here does NOT yet mirror that — when headless succeeds in the async
+flow, the headless worker persists its own `ExtractResult` with the
+default `escalation: "not_attempted"`, and when escalation fails the
+static worker falls through to persist the static result without
+flagging the failure on the row. See the comment block in
+`_process_one` for the deferred work.
 
 ## Dependencies
 

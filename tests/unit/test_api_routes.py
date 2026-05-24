@@ -611,3 +611,82 @@ def test_extract_returns_degraded_when_static_and_headless_both_fail(monkeypatch
     # of the fallback chain failed.
     assert any(e.startswith("static_fetch_failed:TimeoutError") for e in data["errors"])
     assert any(e.startswith("headless_fetch_failed:RuntimeError") for e in data["errors"])
+
+
+def test_extract_skips_headless_rescue_when_budget_too_small(monkeypatch):
+    """When static fetch fails AND headless is configured BUT there's less
+    than _HEADLESS_FALLBACK_MIN_SEC wall-clock remaining, the rescue is
+    SKIPPED rather than attempted. Skipping is the right call here: cold-
+    starting headless with <8s left would only push us over Lambda's 28s
+    ceiling and turn a clean degraded-200 into a hard timeout.
+
+    Deterministically engineered by setting the per-request budget to ~0 so
+    the post-static `remaining` is always below the headless-fallback floor.
+    Avoids real-time sleeps that flake on overloaded CI runners."""
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.setenv("HEADLESS_FUNCTION_NAME", "fake-headless-fn")
+    # Force `remaining` to immediately fall below _HEADLESS_FALLBACK_MIN_SEC
+    # so the guard trips before invoke_headless is called.
+    monkeypatch.setattr("crawler.api.routes._EXTRACT_BUDGET_SEC", 0.0)
+
+    async def boom(*args, **kwargs):
+        raise TimeoutError("static dead")
+
+    monkeypatch.setattr("crawler.api.routes.extract_pipeline", boom)
+
+    # If headless were actually invoked, the mock would record a call —
+    # but it must NEVER be invoked on this path.
+    headless_mock = MagicMock(return_value={})
+    monkeypatch.setattr("crawler.api.routes.invoke_headless", headless_mock)
+
+    client = TestClient(app)
+    response = client.post("/extract", json={"url": "http://slow.example/"})
+
+    assert response.status_code == 200
+    data = response.json()
+    # Degraded response — headless was over-budget and skipped.
+    assert data["fetcher_used"] == "none"
+    assert data["escalation"] == "failed"
+    assert data["escalation_error"] == "fetch_failed:TimeoutError"
+    # Critical assertion: headless was NEVER invoked because the budget
+    # check tripped before the boto3 call.
+    assert headless_mock.call_count == 0, (
+        f"headless was invoked despite tiny budget: {headless_mock.call_count} times"
+    )
+    # The errors list should contain the static failure marker but NOT a
+    # headless-failure marker (because we never tried).
+    assert any(e.startswith("static_fetch_failed:TimeoutError") for e in data["errors"])
+    assert not any(e.startswith("headless_fetch_failed") for e in data["errors"])
+
+
+def test_extract_wait_for_ceiling_falls_back_gracefully(monkeypatch):
+    """The 24s `asyncio.wait_for` belt-and-braces around `extract_pipeline`
+    is meant to catch downstream bugs that ignore the deadline. When it
+    fires, we should still produce a clean degraded-200 response (NOT
+    propagate the TimeoutError uncaught, which would surface as a 500)."""
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.delenv("HEADLESS_FUNCTION_NAME", raising=False)
+
+    # Patch the wait_for ceiling down to 0.1s so the test runs fast.
+    # The pipeline mock hangs forever — the ceiling MUST fire and convert
+    # this into a `TimeoutError` static_exc, then a degraded response.
+    monkeypatch.setattr("crawler.api.routes._EXTRACT_WAIT_FOR_SEC", 0.1)
+
+    import asyncio as _asyncio
+
+    async def hangs_forever(*args, **kwargs):
+        await _asyncio.sleep(60)  # would block Lambda timeout without wait_for
+
+    monkeypatch.setattr("crawler.api.routes.extract_pipeline", hangs_forever)
+
+    client = TestClient(app)
+    response = client.post("/extract", json={"url": "http://hangs.example/"})
+
+    # Critical: clean 200, NOT a propagated TimeoutError → 500.
+    assert response.status_code == 200
+    data = response.json()
+    assert data["fetcher_used"] == "none"
+    assert data["escalation"] == "failed"
+    # The ceiling raises asyncio.TimeoutError (alias for builtin TimeoutError
+    # since 3.11). Either name in errors[] is acceptable.
+    assert data["escalation_error"].startswith("fetch_failed:TimeoutError")

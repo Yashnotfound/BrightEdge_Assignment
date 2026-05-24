@@ -45,9 +45,13 @@ class PagesRepo:
         # lookups return the full schema. Production (per design spec §7.3)
         # moves json_ld to S3 to keep DDB items <8KB; we accept that risk
         # at PoC scale because the test URLs have <2KB JSON-LD each.
-        item = {
-            "url_hash": result.url_hash,
-            "version": 0,
+        #
+        # NB: we use UpdateItem (with SET on every content attribute) rather
+        # than PutItem because PutItem replaces the whole item, which would
+        # wipe the `counted_job_ids` SET that `try_claim_for_job` maintains
+        # for idempotent job-counter bumps across SQS at-least-once
+        # redeliveries. UpdateItem leaves attributes we don't touch alone.
+        attrs = {
             "url": result.url,
             "domain": _domain_of(result.url),
             "fetched_at": result.fetched_at.isoformat(),
@@ -69,7 +73,53 @@ class PagesRepo:
             "s3_jsonld_uri": s3_jsonld_uri,
             "schema_version": 1,
         }
-        self._table.put_item(Item=_to_decimal_safe(item))
+        attrs = _to_decimal_safe(attrs)
+        # Build "SET #a0 = :v0, #a1 = :v1, ..." — placeholders avoid
+        # collisions with DDB reserved words like `url`, `domain`, `language`.
+        names = {f"#a{i}": k for i, k in enumerate(attrs.keys())}
+        values = {f":v{i}": v for i, v in enumerate(attrs.values())}
+        set_clause = ", ".join(f"{n} = :v{i}" for i, n in enumerate(names))
+        self._table.update_item(
+            Key={"url_hash": result.url_hash, "version": 0},
+            UpdateExpression=f"SET {set_clause}",
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+
+    def try_claim_for_job(self, *, url_hash: str, job_id: str) -> bool:
+        """Atomically record that ``job_id`` has counted this ``url_hash``.
+
+        Returns True if this is the first time ``job_id`` claimed this
+        ``url_hash`` (caller should bump the job counter). Returns False
+        if ``job_id`` already claimed it (caller should skip the bump).
+
+        Implementation: ``UpdateItem`` with ``ADD counted_job_ids :j`` and
+        ``ReturnValues=ALL_OLD``. ``ADD`` on a SET is idempotent — adding
+        the same member twice leaves the SET unchanged. We inspect the
+        pre-update state (``ALL_OLD``) to detect whether this was a fresh
+        claim.
+
+        Side effects:
+
+        * If the Pages row does not exist, ``UpdateItem`` will create it
+          (with only ``url_hash`` / ``version`` / ``counted_job_ids``).
+          This is an acceptable PoC behaviour: callers normally invoke
+          ``put`` first, so this branch only fires on a worker that
+          crashed before persistence. The over-counted "ghost" row is
+          inert for ``/pages`` reads (no ``fetcher_used``).
+
+        Used by the SQS workers to deduplicate counter bumps across
+        at-least-once re-deliveries — see ``docs/modules/workers.md``.
+        """
+        response = self._table.update_item(
+            Key={"url_hash": url_hash, "version": 0},
+            UpdateExpression="ADD counted_job_ids :j",
+            ExpressionAttributeValues={":j": {job_id}},
+            ReturnValues="ALL_OLD",
+        )
+        old_attrs = response.get("Attributes") or {}
+        old_claims = old_attrs.get("counted_job_ids") or set()
+        return job_id not in old_claims
 
     def get(self, *, url_hash: str) -> ExtractResult | None:
         response = self._table.get_item(Key={"url_hash": url_hash, "version": 0})

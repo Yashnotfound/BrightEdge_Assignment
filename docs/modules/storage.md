@@ -18,8 +18,17 @@ here because it's the partition key.
 ## Public API
 
 - `crawler.storage.dynamo.PagesRepo(table_name, region_name="us-east-1")` — frozen dataclass.
-  - `put(result, *, s3_html_uri, s3_jsonld_uri) -> None`
+  - `put(result, *, s3_html_uri, s3_jsonld_uri) -> None` — implemented as
+    `UpdateItem` (not `PutItem`) so concurrent writes to the same row
+    preserve the `counted_job_ids` SET attribute (see below).
   - `get(*, url_hash) -> ExtractResult | None`
+  - `try_claim_for_job(*, url_hash, job_id) -> bool` — idempotent
+    per-(job, url) claim token used by workers before bumping
+    `JobsRepo.increment`. First call returns True (caller should bump);
+    subsequent calls with the same `job_id` return False so the caller
+    skips the bump. Backed by a `counted_job_ids` DDB String Set
+    attribute on the Pages row, mutated via `ADD ... ReturnValues=ALL_OLD`
+    (atomic). Defeats SQS at-least-once over-counting.
 - `crawler.storage.dynamo.JobsRepo(table_name, region_name="us-east-1")` — frozen dataclass.
   - `create(*, job_id, total) -> None`
   - `increment(*, job_id, succeeded=0, failed=0) -> None`

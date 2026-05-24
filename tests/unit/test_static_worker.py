@@ -311,6 +311,165 @@ def test_process_one_headless_returned_rejection_bumps_failed(aws_resources, mon
     assert failed == 1, f"expected exactly one failed bump, got {increment_calls}"
 
 
+def test_process_one_idempotent_succeeded_bump_on_redeliver(aws_resources, monkeypatch):
+    """SQS at-least-once: a redelivered message must not double-bump
+    `succeeded`. The first claim succeeds, the second is a no-op."""
+    monkeypatch.setenv("PAGES_TABLE", "brightedge-pages")
+    monkeypatch.setenv("JOBS_TABLE", "brightedge-jobs")
+    monkeypatch.setenv("RAW_HTML_BUCKET", "raw")
+    monkeypatch.delenv("HEADLESS_FUNCTION_NAME", raising=False)
+
+    fake_result = ExtractResult(
+        url="http://example.com",
+        url_hash="d" * 64,
+        fetched_at=datetime.now(UTC),
+        fetcher_used="static",
+        http_status=200,
+        title="Test",
+        extraction_confidence=0.9,
+    )
+
+    async def fake_pipeline(url, *, return_html=False):
+        return fake_result, "<html>x</html>"
+
+    from crawler.workers import static_worker
+    monkeypatch.setattr(static_worker, "extract_pipeline", fake_pipeline)
+
+    from crawler.storage.dynamo import JobsRepo
+    JobsRepo(table_name="brightedge-jobs").create(job_id="jidem", total=1)
+
+    increment_calls: list[dict] = []
+    real_increment = JobsRepo.increment
+
+    def spy_increment(self, **kwargs):
+        increment_calls.append(kwargs)
+        return real_increment(self, **kwargs)
+
+    monkeypatch.setattr(JobsRepo, "increment", spy_increment)
+
+    # Two deliveries of the same SQS message body.
+    static_worker._process_one({"url": "http://example.com", "job_id": "jidem"})
+    static_worker._process_one({"url": "http://example.com", "job_id": "jidem"})
+
+    succeeded = sum(c.get("succeeded", 0) for c in increment_calls)
+    failed = sum(c.get("failed", 0) for c in increment_calls)
+    assert succeeded == 1, f"expected exactly one succeeded bump, got {increment_calls}"
+    assert failed == 0
+
+
+def test_process_one_idempotent_failed_bump_on_redeliver_after_rejection(
+    aws_resources, monkeypatch
+):
+    """A redelivered message that the persist gate rejects must bump
+    `failed` only once, not twice."""
+    monkeypatch.setenv("PAGES_TABLE", "brightedge-pages")
+    monkeypatch.setenv("JOBS_TABLE", "brightedge-jobs")
+    monkeypatch.setenv("RAW_HTML_BUCKET", "raw")
+    monkeypatch.delenv("HEADLESS_FUNCTION_NAME", raising=False)
+
+    fake_result = ExtractResult(
+        url="http://example.com",
+        url_hash="e" * 64,
+        fetched_at=datetime.now(UTC),
+        fetcher_used="static",
+        http_status=200,
+        title="Just a moment",
+        extraction_confidence=0.7,
+    )
+    captcha_html = (
+        "<html><body>Please complete the CAPTCHA to continue.</body></html>"
+    )
+
+    async def fake_pipeline(url, *, return_html=False):
+        return fake_result, captcha_html
+
+    from crawler.workers import static_worker
+    monkeypatch.setattr(static_worker, "extract_pipeline", fake_pipeline)
+
+    from crawler.storage.dynamo import JobsRepo
+    JobsRepo(table_name="brightedge-jobs").create(job_id="jrejidem", total=1)
+
+    increment_calls: list[dict] = []
+    real_increment = JobsRepo.increment
+
+    def spy_increment(self, **kwargs):
+        increment_calls.append(kwargs)
+        return real_increment(self, **kwargs)
+
+    monkeypatch.setattr(JobsRepo, "increment", spy_increment)
+
+    static_worker._process_one({"url": "http://example.com", "job_id": "jrejidem"})
+    static_worker._process_one({"url": "http://example.com", "job_id": "jrejidem"})
+
+    succeeded = sum(c.get("succeeded", 0) for c in increment_calls)
+    failed = sum(c.get("failed", 0) for c in increment_calls)
+    assert succeeded == 0
+    assert failed == 1, f"expected exactly one failed bump, got {increment_calls}"
+
+
+def test_process_one_idempotent_succeeded_bump_after_headless_escalation(
+    aws_resources, monkeypatch
+):
+    """The headless-escalation success branch must also gate its counter
+    bump on `try_claim_for_job`, so SQS redeliveries don't over-count."""
+    monkeypatch.setenv("PAGES_TABLE", "brightedge-pages")
+    monkeypatch.setenv("JOBS_TABLE", "brightedge-jobs")
+    monkeypatch.setenv("RAW_HTML_BUCKET", "raw")
+    monkeypatch.setenv("HEADLESS_FUNCTION_NAME", "fake-headless-fn")
+
+    fake_result = _low_confidence_result()
+
+    async def fake_pipeline(url, *, return_html=False):
+        return fake_result, "<html>x</html>"
+
+    from crawler.workers import static_worker
+    monkeypatch.setattr(static_worker, "extract_pipeline", fake_pipeline)
+
+    def returns_ok_payload(url, *, persist=False):
+        # Headless persisted successfully; payload has a valid url_hash.
+        return {
+            "url": url,
+            "url_hash": "b" * 64,
+            "fetcher_used": "headless",
+            "http_status": 200,
+            "extraction_confidence": 0.95,
+        }
+
+    monkeypatch.setattr(
+        "crawler.workers.static_worker.invoke_headless",
+        returns_ok_payload,
+    )
+
+    from crawler.storage.dynamo import JobsRepo, PagesRepo
+    JobsRepo(table_name="brightedge-jobs").create(job_id="jhead", total=1)
+
+    # For the escalation path, the static worker doesn't write the Pages
+    # row itself — the headless worker does. Pre-seed a minimal row so
+    # try_claim_for_job has something to ADD onto. (The real headless
+    # Lambda would have written it in production.)
+    pages_table = boto3.resource("dynamodb", region_name="us-east-1").Table(
+        "brightedge-pages"
+    )
+    pages_table.put_item(Item={"url_hash": "b" * 64, "version": 0})
+
+    increment_calls: list[dict] = []
+    real_increment = JobsRepo.increment
+
+    def spy_increment(self, **kwargs):
+        increment_calls.append(kwargs)
+        return real_increment(self, **kwargs)
+
+    monkeypatch.setattr(JobsRepo, "increment", spy_increment)
+
+    static_worker._process_one({"url": "http://example.com", "job_id": "jhead"})
+    static_worker._process_one({"url": "http://example.com", "job_id": "jhead"})
+
+    succeeded = sum(c.get("succeeded", 0) for c in increment_calls)
+    failed = sum(c.get("failed", 0) for c in increment_calls)
+    assert succeeded == 1, f"expected exactly one succeeded bump, got {increment_calls}"
+    assert failed == 0
+
+
 def test_process_one_5xx_persists_rejected_marker(aws_resources, monkeypatch):
     """5xx upstream errors are persisted as `upstream_error` markers, not
     counted as successful extractions."""

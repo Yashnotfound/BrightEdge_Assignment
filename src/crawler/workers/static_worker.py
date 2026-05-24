@@ -67,7 +67,13 @@ def _process_one(message_body: dict) -> None:
                 # rate-limit), mirror that on the job counter — rejected
                 # rows are `failed`, not `succeeded`, by the rest of the
                 # gate's semantics.
-                if jobs:
+                # Gate the counter bump on a per-(job, url) claim token so
+                # SQS at-least-once redeliveries don't double-count. The
+                # Pages row was written by the headless worker; we just
+                # add this job_id to its `counted_job_ids` SET.
+                if jobs and pages.try_claim_for_job(
+                    url_hash=data["url_hash"], job_id=job_id,
+                ):
                     if data.get("fetcher_used") == "rejected":
                         jobs.increment(job_id=job_id, failed=1)
                     else:
@@ -84,7 +90,11 @@ def _process_one(message_body: dict) -> None:
         if reason is not None:
             result = to_rejected(result, reason)
             pages.put(result, s3_html_uri=None, s3_jsonld_uri=None)
-            if jobs:
+            # Gate the counter bump on a per-(job, url) claim token; see
+            # the escalation branch for the rationale (SQS at-least-once).
+            if jobs and pages.try_claim_for_job(
+                url_hash=result.url_hash, job_id=job_id,
+            ):
                 jobs.increment(job_id=job_id, failed=1)
             return
 
@@ -101,10 +111,23 @@ def _process_one(message_body: dict) -> None:
             ) if result.json_ld else None
         )
         pages.put(result, s3_html_uri=s3_html_uri, s3_jsonld_uri=s3_jsonld_uri)
-        if jobs:
+        # Gate the counter bump on a per-(job, url) claim token so SQS
+        # at-least-once redeliveries don't double-count. ADD on a SET is
+        # idempotent at the DDB layer; we inspect ALL_OLD to decide.
+        if jobs and pages.try_claim_for_job(
+            url_hash=result.url_hash, job_id=job_id,
+        ):
             jobs.increment(job_id=job_id, succeeded=1)
     except Exception:
         logger.exception("static-worker failure on url=%s", url)
+        # TODO(idempotency): the outer-except path runs BEFORE pages.put,
+        # so there is no Pages row to claim against. SQS redelivery here
+        # will over-count `failed` by 1 per retry. Accepted for the PoC
+        # because (a) this branch is rare (only fires on extract_pipeline
+        # raising), and (b) any failure here is already a signal that
+        # the URL needs investigation, so a small counter drift is the
+        # least of our concerns. To fix later: write a minimal "errored"
+        # marker row, then call try_claim_for_job.
         if jobs:
             jobs.increment(job_id=job_id, failed=1)
         raise

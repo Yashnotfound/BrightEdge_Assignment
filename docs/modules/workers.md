@@ -59,6 +59,21 @@ static worker falls through to persist the static result without
 flagging the failure on the row. See the comment block in
 `_process_one` for the deferred work.
 
+## Idempotent counter bumps
+
+SQS delivers each message at-least-once. Without a guard, a worker that
+completes the extract, bumps `JobsRepo.increment`, and then crashes
+before SQS-acking will be redelivered — the second attempt would
+double-count the URL. The static worker calls
+`PagesRepo.try_claim_for_job(url_hash, job_id)` before each
+`jobs.increment(...)` site (escalation-success, normal-persist,
+persist-gate rejection). The claim is an atomic `ADD` to a
+`counted_job_ids` String Set on the Pages row; the first claim returns
+`True` and the bump runs, redelivered claims return `False` and the bump
+is skipped. The outer `except` branch in `_process_one` (extract
+pipeline raised) is deliberately NOT gated — no Pages row exists at that
+point and the path is rare; see the `TODO(idempotency)` comment.
+
 ## Persist gate
 
 Both workers run `crawler.persist_gate.reject_reason` right before the

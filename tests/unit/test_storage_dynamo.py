@@ -55,6 +55,67 @@ def test_pages_put_and_get(ddb_tables):
     assert fetched.title == "T"
 
 
+def test_try_claim_for_job_new_claim_returns_true(ddb_tables):
+    """First call to claim a (job_id, url_hash) returns True so the caller
+    knows it should bump the job counter."""
+    pages, _ = ddb_tables
+    repo = PagesRepo(table_name=pages)
+    result = _make_result("http://x.com")
+    repo.put(result, s3_html_uri=None, s3_jsonld_uri=None)
+
+    claimed = repo.try_claim_for_job(url_hash=result.url_hash, job_id="job-A")
+
+    assert claimed is True
+    # Side effect: the row now records the claim.
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(pages)
+    item = table.get_item(Key={"url_hash": result.url_hash, "version": 0})["Item"]
+    assert item["counted_job_ids"] == {"job-A"}
+
+
+def test_try_claim_for_job_duplicate_returns_false(ddb_tables):
+    """A repeated claim for the same (job_id, url_hash) returns False so
+    the caller skips the counter bump."""
+    pages, _ = ddb_tables
+    repo = PagesRepo(table_name=pages)
+    result = _make_result("http://x.com")
+    repo.put(result, s3_html_uri=None, s3_jsonld_uri=None)
+
+    first = repo.try_claim_for_job(url_hash=result.url_hash, job_id="job-A")
+    second = repo.try_claim_for_job(url_hash=result.url_hash, job_id="job-A")
+
+    assert first is True
+    assert second is False
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(pages)
+    item = table.get_item(Key={"url_hash": result.url_hash, "version": 0})["Item"]
+    assert item["counted_job_ids"] == {"job-A"}  # still just the one entry
+
+
+def test_try_claim_for_job_different_jobs_both_succeed(ddb_tables):
+    """Distinct job_ids on the same url_hash each get a True claim."""
+    pages, _ = ddb_tables
+    repo = PagesRepo(table_name=pages)
+    result = _make_result("http://x.com")
+    repo.put(result, s3_html_uri=None, s3_jsonld_uri=None)
+
+    assert repo.try_claim_for_job(url_hash=result.url_hash, job_id="job-A") is True
+    assert repo.try_claim_for_job(url_hash=result.url_hash, job_id="job-B") is True
+
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(pages)
+    item = table.get_item(Key={"url_hash": result.url_hash, "version": 0})["Item"]
+    assert item["counted_job_ids"] == {"job-A", "job-B"}
+
+
+def test_try_claim_for_job_row_missing_returns_true(ddb_tables):
+    """Claiming against a non-existent Pages row still returns True. ADD
+    will create the row implicitly; this is an acceptable side effect."""
+    pages, _ = ddb_tables
+    repo = PagesRepo(table_name=pages)
+
+    claimed = repo.try_claim_for_job(url_hash="z" * 64, job_id="job-A")
+
+    assert claimed is True
+
+
 def test_jobs_lifecycle(ddb_tables):
     _, jobs = ddb_tables
     repo = JobsRepo(table_name=jobs)

@@ -13,7 +13,8 @@ from datetime import UTC, datetime
 import pytest
 
 from crawler.api.schemas import ExtractResult, Topic
-from crawler.persist_gate import reject_reason, to_rejected
+from crawler.persist_gate import build_fetch_failed_result, reject_reason, to_rejected
+from crawler.storage.hashing import url_hash as _url_hash
 
 
 def _result(
@@ -255,3 +256,49 @@ def test_to_rejected_preserves_escalation() -> None:
     rejected = to_rejected(result, "upstream_blocked")
     assert rejected.escalation == "succeeded"
     assert rejected.escalation_meta == {"reason": "static_fetch_failed"}
+
+
+# ---------------------------------------------------------------------------
+# build_fetch_failed_result
+# ---------------------------------------------------------------------------
+
+
+class _FakeConnectError(Exception):
+    """Stand-in for httpx.ConnectError so the test doesn't pull httpx in."""
+
+
+def test_build_fetch_failed_result_shape() -> None:
+    """Static-only failure: degraded ExtractResult with `fetcher_used="none"`,
+    `http_status=0`, `escalation="failed"`, exception class captured in
+    `errors[]` and `escalation_error`, deterministic `url_hash`."""
+    url = "https://unreachable.example/page"
+    exc = _FakeConnectError("dns failure")
+    result = build_fetch_failed_result(url, exc)
+
+    assert result.url == url
+    assert result.url_hash == _url_hash(url)
+    assert result.fetcher_used == "none"
+    assert result.http_status == 0
+    assert result.extraction_confidence == 0.0
+    assert result.escalation == "failed"
+    assert result.errors == ["static_fetch_failed:_FakeConnectError"]
+    assert result.escalation_error == "fetch_failed:_FakeConnectError"
+
+
+def test_build_fetch_failed_result_with_headless_exc() -> None:
+    """Both legs failed: errors[] carries both class names so an operator
+    can see the static and headless leg each tripped."""
+    url = "https://unreachable.example/page"
+    static_exc = _FakeConnectError("dns failure")
+
+    class _FakeReadTimeout(Exception):
+        pass
+
+    headless_exc = _FakeReadTimeout("playwright timeout")
+    result = build_fetch_failed_result(url, static_exc, headless_exc)
+
+    assert "static_fetch_failed:_FakeConnectError" in result.errors
+    assert "headless_fetch_failed:_FakeReadTimeout" in result.errors
+    # escalation_error tracks the static-leg failure class so the row's
+    # primary failure marker stays consistent with the static-only case.
+    assert result.escalation_error == "fetch_failed:_FakeConnectError"

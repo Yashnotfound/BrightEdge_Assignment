@@ -10,7 +10,7 @@ specific module doc for any subpackage you need to change.
 | `pipeline.py` | (this file, §Pipeline below) | Orchestrates fetch → extract → classify into one `ExtractResult`. |
 | `config.py` | (this file, §Config below) | Env-driven `Settings` dataclass loaded by every Lambda. |
 | `fixtures.py` | (this file, §Fixtures below) | Hard-coded fallback responses (Amazon, REI, CNN) for `?fixture=1` demo mode. |
-| `persist_gate.py` | (see `api.md` / `workers.md`) | Pure helpers (`reject_reason`, `to_rejected`) that filter 4xx/5xx/captcha responses into rejected-marker rows before they reach DDB. |
+| `persist_gate.py` | (see `api.md` / `workers.md`) | Pure helpers (`reject_reason`, `to_rejected`, `build_fetch_failed_result`) that filter 4xx/5xx/captcha responses into rejected-marker rows and build degraded fetch-failed markers before they reach DDB. |
 | `__init__.py` | — | Empty marker. |
 | [`api/`](api.md) | api.md | FastAPI app, routes (`/extract`, `/batch`, `/jobs`, `/pages`), Pydantic schemas. |
 | [`classifier/`](classifier.md) | classifier.md | Heuristic candidates, YAKE keyphrases, topic fusion. |

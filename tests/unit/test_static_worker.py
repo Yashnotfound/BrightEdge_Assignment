@@ -477,6 +477,112 @@ def test_process_one_idempotent_succeeded_bump_after_headless_escalation(
     assert failed == 0
 
 
+def test_process_one_fetch_failure_persists_degraded_row(aws_resources, monkeypatch):
+    """When `extract_pipeline` raises (ConnectError, DNS, firewall block,
+    ReadTimeout), the worker must:
+
+    * persist a degraded Pages row with `fetcher_used="none"` so future
+      `/pages` reads can see what happened,
+    * bump `failed=1` exactly once,
+    * NOT re-raise — returning normally is what acks the SQS message and
+      stops the redelivery storm against an unreachable URL.
+    """
+    import httpx
+
+    monkeypatch.setenv("PAGES_TABLE", "brightedge-pages")
+    monkeypatch.setenv("JOBS_TABLE", "brightedge-jobs")
+    monkeypatch.setenv("RAW_HTML_BUCKET", "raw")
+    monkeypatch.delenv("HEADLESS_FUNCTION_NAME", raising=False)
+
+    async def boom_pipeline(url, *, return_html=False):
+        raise httpx.ConnectError("nope")
+
+    from crawler.workers import static_worker
+    monkeypatch.setattr(static_worker, "extract_pipeline", boom_pipeline)
+
+    from crawler.storage.dynamo import JobsRepo
+    from crawler.storage.hashing import url_hash as _url_hash
+    JobsRepo(table_name="brightedge-jobs").create(job_id="jfetch", total=1)
+
+    increment_calls: list[dict] = []
+    real_increment = JobsRepo.increment
+
+    def spy_increment(self, **kwargs):
+        increment_calls.append(kwargs)
+        return real_increment(self, **kwargs)
+
+    monkeypatch.setattr(JobsRepo, "increment", spy_increment)
+
+    url = "http://unreachable.example/page"
+    # Must NOT raise — successful return is what acks the SQS message.
+    static_worker._process_one({"url": url, "job_id": "jfetch"})
+
+    # Degraded row was persisted.
+    pages = boto3.resource("dynamodb", region_name="us-east-1").Table("brightedge-pages")
+    item = pages.get_item(Key={"url_hash": _url_hash(url), "version": 0}).get("Item")
+    assert item is not None, "degraded marker row was not persisted"
+    assert item["fetcher_used"] == "none"
+    assert item["http_status"] == 0
+    assert float(item["extraction_confidence"]) == 0.0
+    # The exception class is captured in errors[] so operators can grep.
+    errors = list(item.get("errors") or [])
+    assert any(
+        e.startswith("static_fetch_failed:") for e in errors
+    ), f"expected static_fetch_failed marker in errors, got {errors}"
+
+    # `failed` counter bumped exactly once; no `succeeded` bump.
+    succeeded = sum(c.get("succeeded", 0) for c in increment_calls)
+    failed = sum(c.get("failed", 0) for c in increment_calls)
+    assert succeeded == 0
+    assert failed == 1
+
+    # S3 raw HTML was NOT written (no useful content to store).
+    s3 = boto3.client("s3", region_name="us-east-1")
+    assert s3.list_objects_v2(Bucket="raw").get("KeyCount", 0) == 0
+
+
+def test_process_one_fetch_failure_idempotent_on_redelivery(aws_resources, monkeypatch):
+    """SQS at-least-once: a redelivered fetch-failure message must NOT
+    double-bump `failed`. The first delivery writes the degraded row and
+    claims the job_id; the second finds the row already claimed and skips
+    the bump.
+    """
+    import httpx
+
+    monkeypatch.setenv("PAGES_TABLE", "brightedge-pages")
+    monkeypatch.setenv("JOBS_TABLE", "brightedge-jobs")
+    monkeypatch.setenv("RAW_HTML_BUCKET", "raw")
+    monkeypatch.delenv("HEADLESS_FUNCTION_NAME", raising=False)
+
+    async def boom_pipeline(url, *, return_html=False):
+        raise httpx.ConnectError("nope")
+
+    from crawler.workers import static_worker
+    monkeypatch.setattr(static_worker, "extract_pipeline", boom_pipeline)
+
+    from crawler.storage.dynamo import JobsRepo
+    JobsRepo(table_name="brightedge-jobs").create(job_id="jfetchidem", total=1)
+
+    increment_calls: list[dict] = []
+    real_increment = JobsRepo.increment
+
+    def spy_increment(self, **kwargs):
+        increment_calls.append(kwargs)
+        return real_increment(self, **kwargs)
+
+    monkeypatch.setattr(JobsRepo, "increment", spy_increment)
+
+    url = "http://unreachable.example/page"
+    # Two deliveries of the same SQS message body.
+    static_worker._process_one({"url": url, "job_id": "jfetchidem"})
+    static_worker._process_one({"url": url, "job_id": "jfetchidem"})
+
+    succeeded = sum(c.get("succeeded", 0) for c in increment_calls)
+    failed = sum(c.get("failed", 0) for c in increment_calls)
+    assert succeeded == 0
+    assert failed == 1, f"expected exactly one failed bump, got {increment_calls}"
+
+
 def test_process_one_5xx_persists_rejected_marker(aws_resources, monkeypatch):
     """5xx upstream errors are persisted as `upstream_error` markers, not
     counted as successful extractions."""

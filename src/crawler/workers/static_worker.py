@@ -15,7 +15,7 @@ from aws_lambda_powertools.utilities.data_classes.sqs_event import SQSRecord
 
 from crawler.config import load_settings
 from crawler.fetcher.headless import invoke_headless
-from crawler.persist_gate import reject_reason, to_rejected
+from crawler.persist_gate import build_fetch_failed_result, reject_reason, to_rejected
 from crawler.pipeline import extract_pipeline
 from crawler.storage.dynamo import JobsRepo, PagesRepo
 from crawler.storage.s3 import RawHtmlStore
@@ -118,19 +118,27 @@ def _process_one(message_body: dict) -> None:
             url_hash=result.url_hash, job_id=job_id,
         ):
             jobs.increment(job_id=job_id, succeeded=1)
-    except Exception:
-        logger.exception("static-worker failure on url=%s", url)
-        # TODO(idempotency): the outer-except path runs BEFORE pages.put,
-        # so there is no Pages row to claim against. SQS redelivery here
-        # will over-count `failed` by 1 per retry. Accepted for the PoC
-        # because (a) this branch is rare (only fires on extract_pipeline
-        # raising), and (b) any failure here is already a signal that
-        # the URL needs investigation, so a small counter drift is the
-        # least of our concerns. To fix later: write a minimal "errored"
-        # marker row, then call try_claim_for_job.
-        if jobs:
-            jobs.increment(job_id=job_id, failed=1)
-        raise
+    except Exception as exc:
+        logger.exception("extract_pipeline raised for url=%s; persisting degraded marker", url)
+        # Build a degraded marker row so SQS redelivery doesn't repeatedly
+        # retry the same unreachable URL (ConnectError, DNS failure,
+        # firewall block, ReadTimeout). The claim token below keeps the
+        # `failed` counter idempotent under at-least-once redelivery: the
+        # first delivery writes the row and bumps the counter; later
+        # redeliveries find the row already exists and skip the bump.
+        degraded = build_fetch_failed_result(url, exc)
+        try:
+            pages.put(degraded, s3_html_uri=None, s3_jsonld_uri=None)
+            if jobs and pages.try_claim_for_job(
+                url_hash=degraded.url_hash, job_id=job_id,
+            ):
+                jobs.increment(job_id=job_id, failed=1)
+        except Exception:
+            logger.exception(
+                "failed to persist degraded marker for url=%s; "
+                "letting SQS retry as last resort", url,
+            )
+            raise
 
 
 def _record_handler(record: SQSRecord) -> None:

@@ -65,14 +65,27 @@ SQS delivers each message at-least-once. Without a guard, a worker that
 completes the extract, bumps `JobsRepo.increment`, and then crashes
 before SQS-acking will be redelivered — the second attempt would
 double-count the URL. The static worker calls
-`PagesRepo.try_claim_for_job(url_hash, job_id)` before each
+`PagesRepo.try_claim_for_job(url_hash, job_id)` before every
 `jobs.increment(...)` site (escalation-success, normal-persist,
-persist-gate rejection). The claim is an atomic `ADD` to a
-`counted_job_ids` String Set on the Pages row; the first claim returns
-`True` and the bump runs, redelivered claims return `False` and the bump
-is skipped. The outer `except` branch in `_process_one` (extract
-pipeline raised) is deliberately NOT gated — no Pages row exists at that
-point and the path is rare; see the `TODO(idempotency)` comment.
+persist-gate rejection, fetch-failure degraded marker). The claim is an
+atomic `ADD` to a `counted_job_ids` String Set on the Pages row; the
+first claim returns `True` and the bump runs, redelivered claims return
+`False` and the bump is skipped.
+
+## Graceful fetch failure
+
+When `extract_pipeline` raises (ConnectError, DNS failure, firewall block,
+ReadTimeout, etc.) the worker no longer re-raises and burns SQS receives
+against an unreachable URL. Instead the outer `except` builds a degraded
+`ExtractResult` via `crawler.persist_gate.build_fetch_failed_result`
+(`fetcher_used="none"`, `http_status=0`, `escalation="failed"`, exception
+class captured in `errors[]`) and persists it as a marker row. The
+`try_claim_for_job` token then gates the `failed=1` increment so SQS
+at-least-once redelivery doesn't over-count. Returning normally from
+`_process_one` acks the message and stops the redelivery storm. The only
+re-raise path now is when the degraded-persist itself fails (e.g. DDB
+unavailable) — that's a real infra problem and SQS retry is the right
+fallback.
 
 ## Persist gate
 
@@ -88,7 +101,7 @@ is still written so `/pages` keeps the audit trail.
 
 - `crawler.pipeline.extract_pipeline` (static) and `crawler.pipeline.process_html` (headless).
 - `crawler.fetcher.headless.invoke_headless` (static-worker escalation).
-- `crawler.persist_gate` — `reject_reason` / `to_rejected` (filter garbage before DDB).
+- `crawler.persist_gate` — `reject_reason` / `to_rejected` (filter garbage before DDB), `build_fetch_failed_result` (degraded marker for the fetch-failure path).
 - `crawler.storage.dynamo.{PagesRepo,JobsRepo}`, `crawler.storage.s3.RawHtmlStore`.
 - `crawler.config.load_settings`.
 - External: `aws_lambda_powertools` (static), `playwright` (headless; imported lazily inside the handler).

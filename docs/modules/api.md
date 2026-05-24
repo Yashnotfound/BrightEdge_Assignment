@@ -100,7 +100,7 @@ rejection in the response.
 
 - `crawler.pipeline` — `extract_pipeline` (async; awaited from the `/extract` handler).
 - `crawler.fetcher.headless` — `invoke_headless` (low-confidence escalation).
-- `crawler.persist_gate` — `reject_reason` / `to_rejected` (filter garbage before DDB).
+- `crawler.persist_gate` — `reject_reason` / `to_rejected` (filter garbage before DDB), `build_fetch_failed_result` (degraded `ExtractResult` shape for the static-fetch-failure path).
 - `crawler.storage.{dynamo,s3,hashing}` — persistence.
 - `crawler.config` — env-driven settings.
 - `crawler.fixtures` — `amazon_toaster`, `rei_outdoors`, `cnn_tech` (lazy-imported inside the route, only when `?fixture=1` is set).

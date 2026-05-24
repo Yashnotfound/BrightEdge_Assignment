@@ -144,3 +144,41 @@ def test_persist_skips_when_settings_unconfigured(monkeypatch):
     )
     # Should not raise — no AWS clients are touched because settings are empty.
     asyncio.run(headless_worker._persist_headless(fake_result, "<html></html>"))
+
+
+def test_handler_persists_rejected_marker_for_captcha_body(aws_resources, monkeypatch):
+    """When the headless fetch lands on a captcha-fingerprint page (e.g. the
+    Cloudflare 'Just a Moment' interstitial), the persist gate must replace
+    the result with a rejected marker, skip the S3 raw-HTML write, and still
+    write the DDB row so the audit trail remains visible via /pages."""
+    monkeypatch.setenv("PAGES_TABLE", "brightedge-pages")
+    monkeypatch.setenv("RAW_HTML_BUCKET", "raw")
+
+    async def fake_fetch(url: str):
+        return (
+            "<html><head><title>Just a Moment</title></head>"
+            "<body>Please complete the CAPTCHA to continue.</body></html>",
+            200,
+        )
+
+    from crawler.workers import headless_worker
+    monkeypatch.setattr(headless_worker, "_fetch_headless", fake_fetch)
+
+    result = headless_worker.handler(
+        {"url": "http://blocked.example/", "persist": True},
+        context=None,
+    )
+
+    # The returned (and persisted) result is the rejected marker.
+    assert result["fetcher_used"] == "rejected"
+    assert result["extraction_confidence"] == 0.0
+    assert result["topics"] == []
+
+    pages = boto3.resource("dynamodb", region_name="us-east-1").Table("brightedge-pages")
+    items = pages.scan()["Items"]
+    assert len(items) == 1
+    assert items[0]["fetcher_used"] == "rejected"
+
+    # No raw HTML in S3.
+    s3 = boto3.client("s3", region_name="us-east-1")
+    assert s3.list_objects_v2(Bucket="raw").get("KeyCount", 0) == 0

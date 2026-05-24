@@ -23,6 +23,7 @@ from crawler.api.schemas import (
 )
 from crawler.config import load_settings
 from crawler.fetcher.headless import invoke_headless
+from crawler.persist_gate import reject_reason, to_rejected
 from crawler.pipeline import extract_pipeline
 from crawler.storage.dynamo import JobsRepo, PagesRepo
 from crawler.storage.hashing import url_hash as _url_hash
@@ -50,16 +51,27 @@ def _settings():
     return load_settings()
 
 
-async def _persist(result: ExtractResult, html: str | None) -> None:
+async def _persist(result: ExtractResult, html: str | None) -> ExtractResult:
     """Persist S3 raw HTML + S3 JSON-LD + DynamoDB row concurrently.
 
     boto3 is sync, so each write runs in a default-executor thread; the three
     are awaited together. DynamoDB write is intentionally sequenced AFTER the
     S3 writes complete so its row references the final S3 URIs.
+
+    Runs the persist gate first: if the result fingerprints as a bot-block /
+    rate-limit / captcha interstitial, it's swapped for a `rejected` marker
+    and the S3 raw-HTML write is skipped (no useful content to store). The
+    DDB row is still written so the audit trail remains visible via /pages.
+    Returns the result that was actually persisted (may differ from input).
     """
+    reason = reject_reason(result, html)
+    if reason is not None:
+        result = to_rejected(result, reason)
+        html = None  # nothing useful to put in S3
+
     s = _settings()
     if not s.raw_html_bucket or not s.pages_table:
-        return  # local-dev fallback: skip persistence
+        return result  # local-dev fallback: skip persistence
     store = RawHtmlStore(bucket=s.raw_html_bucket)
     domain = urlsplit(result.url).netloc.lower()
     fetched_iso = result.fetched_at.isoformat()
@@ -99,6 +111,7 @@ async def _persist(result: ExtractResult, html: str | None) -> None:
         PagesRepo(table_name=s.pages_table).put,
         result, s3_html_uri=s3_html_uri, s3_jsonld_uri=s3_jsonld_uri,
     )
+    return result
 
 
 def _degraded_result(
@@ -304,7 +317,11 @@ async def extract(
 
     try:
         if raw_html is not None:
-            await _persist(result, raw_html)
+            # _persist may swap `result` for a rejected marker if the persist
+            # gate fires (bot-block, rate-limit, captcha). Reflect that in
+            # the response so the client sees fetcher_used="rejected" rather
+            # than bogus topics.
+            result = await _persist(result, raw_html)
     except Exception:  # noqa: BLE001, S110 - persistence failure must not break the response
         pass
     return result

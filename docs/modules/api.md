@@ -86,10 +86,21 @@ the HTTP status code.
 | POST | `/batch` | `BatchResponse` | Enqueue up to 1000 URLs onto SQS. |
 | GET | `/jobs/{job_id}` | `JobStatus` | Poll status of a `/batch` submission. |
 
+## Persist gate
+
+Right before `_persist` writes to S3/DDB, the route runs the persist gate
+(`crawler.persist_gate.reject_reason`). A 4xx/5xx upstream block or a
+captcha-fingerprint body swaps `result` for a rejected marker
+(`fetcher_used="rejected"`, empty topics, zero confidence) and skips the
+S3 raw-HTML write. The DDB row is still written so `/pages` keeps an audit
+trail. The route returns the rejected marker too, so callers see the
+rejection in the response.
+
 ## Dependencies
 
 - `crawler.pipeline` — `extract_pipeline` (async; awaited from the `/extract` handler).
 - `crawler.fetcher.headless` — `invoke_headless` (low-confidence escalation).
+- `crawler.persist_gate` — `reject_reason` / `to_rejected` (filter garbage before DDB).
 - `crawler.storage.{dynamo,s3,hashing}` — persistence.
 - `crawler.config` — env-driven settings.
 - `crawler.fixtures` — `amazon_toaster`, `rei_outdoors`, `cnn_tech` (lazy-imported inside the route, only when `?fixture=1` is set).

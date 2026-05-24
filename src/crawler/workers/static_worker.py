@@ -15,6 +15,7 @@ from aws_lambda_powertools.utilities.data_classes.sqs_event import SQSRecord
 
 from crawler.config import load_settings
 from crawler.fetcher.headless import invoke_headless
+from crawler.persist_gate import reject_reason, to_rejected
 from crawler.pipeline import extract_pipeline
 from crawler.storage.dynamo import JobsRepo, PagesRepo
 from crawler.storage.s3 import RawHtmlStore
@@ -66,6 +67,18 @@ def _process_one(message_body: dict) -> None:
                 return
             except Exception:  # noqa: BLE001
                 logger.exception("headless escalation failed; keeping static result")
+
+        # Persist-gate: if the result looks like a Cloudflare/CDN block,
+        # rate-limit, or captcha interstitial, replace it with a rejected
+        # marker and bump `failed` instead of `succeeded`. Skips the S3 raw-
+        # HTML write because the body holds no useful content.
+        reason = reject_reason(result, raw_html)
+        if reason is not None:
+            result = to_rejected(result, reason)
+            pages.put(result, s3_html_uri=None, s3_jsonld_uri=None)
+            if jobs:
+                jobs.increment(job_id=job_id, failed=1)
+            return
 
         domain = urlsplit(result.url).netloc.lower()
         fetched_iso = result.fetched_at.isoformat()

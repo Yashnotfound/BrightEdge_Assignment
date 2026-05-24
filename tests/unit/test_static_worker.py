@@ -188,3 +188,105 @@ def test_process_one_headless_malformed_payload_falls_back(aws_resources, monkey
     failed = sum(c.get("failed", 0) for c in increment_calls)
     assert succeeded == 1
     assert failed == 0
+
+
+def test_process_one_captcha_body_persists_rejected_marker(aws_resources, monkeypatch):
+    """A 200 with a captcha-fingerprint body must NOT be persisted as real
+    content. The persist gate replaces the result with a `rejected` marker,
+    bumps `failed` (not `succeeded`), and skips the S3 raw-HTML write."""
+    monkeypatch.setenv("PAGES_TABLE", "brightedge-pages")
+    monkeypatch.setenv("JOBS_TABLE", "brightedge-jobs")
+    monkeypatch.setenv("RAW_HTML_BUCKET", "raw")
+    monkeypatch.delenv("HEADLESS_FUNCTION_NAME", raising=False)
+
+    # Static pipeline returns a result with a CAPTCHA body. Without the gate,
+    # this would be persisted with bogus topics like ["captcha", "robot"].
+    fake_result = ExtractResult(
+        url="http://example.com",
+        url_hash="c" * 64,
+        fetched_at=datetime.now(UTC),
+        fetcher_used="static",
+        http_status=200,
+        title="Just a moment",
+        extraction_confidence=0.7,  # high enough to bypass the 4xx confidence floor
+    )
+    captcha_html = (
+        "<html><body>Please complete the CAPTCHA to continue.</body></html>"
+    )
+
+    async def fake_pipeline(url, *, return_html=False):
+        return fake_result, captcha_html
+
+    from crawler.workers import static_worker
+    monkeypatch.setattr(static_worker, "extract_pipeline", fake_pipeline)
+
+    from crawler.storage.dynamo import JobsRepo
+    JobsRepo(table_name="brightedge-jobs").create(job_id="jcap", total=1)
+
+    increment_calls: list[dict] = []
+    real_increment = JobsRepo.increment
+
+    def spy_increment(self, **kwargs):
+        increment_calls.append(kwargs)
+        return real_increment(self, **kwargs)
+
+    monkeypatch.setattr(JobsRepo, "increment", spy_increment)
+
+    static_worker._process_one({"url": "http://example.com", "job_id": "jcap"})
+
+    # DDB row was written but as a rejected marker.
+    pages = boto3.resource("dynamodb", region_name="us-east-1").Table("brightedge-pages")
+    item = pages.get_item(Key={"url_hash": "c" * 64, "version": 0}).get("Item")
+    assert item is not None
+    assert item["fetcher_used"] == "rejected"
+    assert float(item["extraction_confidence"]) == 0.0
+    assert item["topics"] == []
+
+    # S3 raw HTML was NOT written (no useful content to store).
+    s3 = boto3.client("s3", region_name="us-east-1")
+    assert s3.list_objects_v2(Bucket="raw").get("KeyCount", 0) == 0
+
+    # Job counter bumps `failed`, not `succeeded`.
+    succeeded = sum(c.get("succeeded", 0) for c in increment_calls)
+    failed = sum(c.get("failed", 0) for c in increment_calls)
+    assert succeeded == 0
+    assert failed == 1
+
+
+def test_process_one_5xx_persists_rejected_marker(aws_resources, monkeypatch):
+    """5xx upstream errors are persisted as `upstream_error` markers, not
+    counted as successful extractions."""
+    monkeypatch.setenv("PAGES_TABLE", "brightedge-pages")
+    monkeypatch.setenv("JOBS_TABLE", "brightedge-jobs")
+    monkeypatch.setenv("RAW_HTML_BUCKET", "raw")
+    monkeypatch.delenv("HEADLESS_FUNCTION_NAME", raising=False)
+
+    fake_result = ExtractResult(
+        url="http://example.com",
+        url_hash="5" * 64,
+        fetched_at=datetime.now(UTC),
+        fetcher_used="static",
+        http_status=503,
+        extraction_confidence=0.8,
+    )
+
+    async def fake_pipeline(url, *, return_html=False):
+        return fake_result, "<html>Service Unavailable</html>"
+
+    from crawler.workers import static_worker
+    monkeypatch.setattr(static_worker, "extract_pipeline", fake_pipeline)
+
+    from crawler.storage.dynamo import JobsRepo
+    JobsRepo(table_name="brightedge-jobs").create(job_id="j5", total=1)
+
+    static_worker._process_one({"url": "http://example.com", "job_id": "j5"})
+
+    pages = boto3.resource("dynamodb", region_name="us-east-1").Table("brightedge-pages")
+    item = pages.get_item(Key={"url_hash": "5" * 64, "version": 0}).get("Item")
+    assert item is not None
+    assert item["fetcher_used"] == "rejected"
+    assert float(item["extraction_confidence"]) == 0.0
+    assert item["http_status"] == 503  # preserved
+    # S3 raw HTML write was skipped.
+    s3 = boto3.client("s3", region_name="us-east-1")
+    assert s3.list_objects_v2(Bucket="raw").get("KeyCount", 0) == 0

@@ -49,6 +49,9 @@ Below `0.5` triggers headless escalation (configurable via
 
 ## Tests
 
-`tests/test_fetcher_static.py`, `tests/test_confidence.py`,
-`tests/test_robots.py`. Headless invocation is mocked at the `boto3.client`
-boundary.
+`tests/unit/test_fetcher_static.py` and `tests/unit/test_fetcher_confidence.py`
+are the dedicated suites. `robots.py`, `user_agents.py`, and `headless.py`
+do **not** have unit tests yet — `robots.can_fetch` is currently best-effort
+and not called from the live pipeline; `user_agents.pick` is a 3-element
+random selector; and headless invocation is verified end-to-end via
+`scripts/smoke.sh` against the deployed stack.

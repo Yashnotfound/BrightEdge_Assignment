@@ -61,5 +61,5 @@ and strips default ports.
 
 ## Tests
 
-`tests/test_storage_hashing.py` (pure-function), `tests/test_storage_dynamo.py`
-and `tests/test_storage_s3.py` (boto3 mocked via `moto` or stub clients).
+`tests/unit/test_storage_hashing.py` (pure-function), `tests/unit/test_storage_dynamo.py`
+and `tests/unit/test_storage_s3.py` (boto3 mocked via `moto` or stub clients).

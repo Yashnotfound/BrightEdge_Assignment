@@ -44,5 +44,7 @@ parsing internally if `soup` is omitted.
 
 ## Tests
 
-`tests/test_extractor_*.py` for each submodule. Saved HTML fixtures live in
-`tests/fixtures/` and are used to assert specific field extraction.
+`tests/unit/test_extractor_*.py` — one suite per submodule (`test_extractor_meta`,
+`test_extractor_jsonld`, `test_extractor_body`, `test_extractor_language`).
+Saved HTML fixtures live in `tests/fixtures/` and are used to assert specific
+field extraction.

@@ -4,7 +4,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
+from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
 import boto3
@@ -27,6 +29,19 @@ from crawler.storage.hashing import url_hash as _url_hash
 from crawler.storage.s3 import RawHtmlStore
 
 logger = logging.getLogger(__name__)
+
+# Wall-clock budget for one /extract request, sized to fit comfortably under
+# the API Lambda's 28s timeout (template.yaml). Leaving ~5s of headroom keeps
+# us safe against Mangum/serialization overhead and lets us still attempt a
+# headless fallback when the static fetch fails late.
+_EXTRACT_BUDGET_SEC = 23.0
+# Hard ceiling on the whole pipeline future — belt-and-braces against a
+# downstream bug that ignores the deadline.
+_EXTRACT_WAIT_FOR_SEC = 24.0
+# Slack reserved for the headless-fallback path when static fails. If less
+# than this much budget is left we skip headless and return the degraded
+# response immediately.
+_HEADLESS_FALLBACK_MIN_SEC = 8.0
 
 router = APIRouter()
 
@@ -86,6 +101,89 @@ async def _persist(result: ExtractResult, html: str | None) -> None:
     )
 
 
+def _degraded_result(
+    url: str,
+    static_exc: BaseException,
+    headless_exc: BaseException | None,
+) -> ExtractResult:
+    """Build an `ExtractResult` for the case where every fetcher failed.
+
+    Returned with HTTP 200 (not 5xx) because the API itself worked — the
+    upstream URL is what we couldn't reach. Clients should inspect
+    `escalation == "failed"` (and the `errors` list) to detect this case
+    instead of treating it as a successful crawl.
+    """
+    errors = [f"static_fetch_failed:{type(static_exc).__name__}"]
+    if headless_exc is not None:
+        errors.append(f"headless_fetch_failed:{type(headless_exc).__name__}")
+    return ExtractResult(
+        url=url,
+        url_hash=_url_hash(url),
+        fetched_at=datetime.now(UTC),
+        fetcher_used="none",
+        http_status=0,
+        extraction_confidence=0.0,
+        errors=errors,
+        escalation="failed",
+        escalation_error=f"fetch_failed:{type(static_exc).__name__}",
+    )
+
+
+async def _try_headless_fallback(
+    url: str,
+    static_exc: BaseException,
+    deadline: float,
+) -> tuple[ExtractResult | None, BaseException | None]:
+    """Invoke the headless Lambda as a last-resort rescue when the static
+    fetcher failed (timeout, firewall block, DNS, etc.).
+
+    Returns `(result, None)` on success, `(None, headless_exc)` if headless
+    itself errored, and `(None, None)` when headless wasn't even attempted
+    (unconfigured or budget-exhausted). The caller emits the degraded
+    response in the latter two cases, carrying `headless_exc` into the
+    response's `errors[]` so an operator can see BOTH legs of the fallback
+    chain failed.
+
+    Implementation note: `invoke_headless` is a synchronous boto3 call. We
+    run it via `asyncio.to_thread` + `asyncio.wait_for(remaining)` so (a)
+    the event loop isn't blocked while waiting on the Lambda response,
+    and (b) a slow headless can't push us past Lambda's own 28s ceiling.
+    """
+    settings = _settings()
+    if not settings.headless_function_name:
+        return None, None
+    remaining = deadline - time.monotonic()
+    if remaining < _HEADLESS_FALLBACK_MIN_SEC:
+        # Not enough wall-clock left for headless to even cold-start, never
+        # mind Playwright navigation. Skip rather than guarantee a second
+        # Lambda timeout.
+        logger.warning(
+            "skipping headless fallback after static failure %s: only %.1fs left",
+            type(static_exc).__name__,
+            remaining,
+        )
+        return None, None
+    try:
+        data = await asyncio.wait_for(
+            asyncio.to_thread(invoke_headless, url, persist=False),
+            timeout=remaining,
+        )
+        result = ExtractResult(**data)
+        # Mark the rescue path so an operator can distinguish a low-confidence
+        # escalation from a static-fetch-failure rescue.
+        result.escalation = "succeeded"
+        result.escalation_meta = {
+            "reason": "static_fetch_failed",
+            "static_error": type(static_exc).__name__,
+            "headless_confidence": result.extraction_confidence,
+            "headless_word_count": result.word_count,
+        }
+        return result, None
+    except Exception as exc:  # noqa: BLE001 - caller will emit the degraded response
+        logger.exception("headless fallback after static failure also failed")
+        return None, exc
+
+
 @router.post("/extract", response_model=ExtractResult, tags=["extract"],
              dependencies=[Depends(require_api_key)])
 async def extract(
@@ -107,15 +205,66 @@ async def extract(
         # No match → fall through to live fetch
 
     settings = _settings()
+    # Absolute deadline shared by the static fetcher and the headless
+    # fallback. Computed in monotonic time so clock skew can't move it.
+    deadline = time.monotonic() + _EXTRACT_BUDGET_SEC
+
+    raw_html: str | None = None
+    result: ExtractResult | None = None
+    static_exc: BaseException | None = None
+
     try:
-        returned = await extract_pipeline(req.url, return_html=True)
+        returned = await asyncio.wait_for(
+            extract_pipeline(req.url, return_html=True, deadline=deadline),
+            timeout=_EXTRACT_WAIT_FOR_SEC,
+        )
         if isinstance(returned, tuple):
             result, raw_html = returned
         else:
             result, raw_html = returned, None
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"fetch failed: {exc}") from exc
+    except TimeoutError as exc:
+        # Belt-and-braces: the deadline should have fired first, but if a
+        # downstream call ignores it we still bail out here before Lambda
+        # kills the whole process. `asyncio.TimeoutError` is an alias for the
+        # builtin `TimeoutError` since Python 3.11; ruff UP041.
+        static_exc = exc
+        logger.warning("static fetch wait_for ceiling hit for %s", req.url)
+    except Exception as exc:  # noqa: BLE001 - any upstream fetch failure
+        static_exc = exc
+        logger.warning(
+            "static fetch failed for %s: %s",
+            req.url,
+            type(exc).__name__,
+        )
 
+    # ─── Static-fetch failure path ──────────────────────────────────────────
+    # Try headless as a rescue (different egress IP, real browser — often
+    # bypasses CDN/firewall blocks that defeated the static fetch). Fall back
+    # to a degraded 200-OK response with `escalation: "failed"` if headless
+    # is unconfigured, over-budget, or also errors. The caller gets enough
+    # diagnostic detail in `errors[]` to see exactly which legs failed.
+    #
+    # Deliberate: the degraded response path does NOT persist anything to
+    # S3/DynamoDB — there's no useful HTML to store, and a row keyed only on
+    # url_hash with `http_status=0` would just confuse later `/pages` reads.
+    # A subsequent `/extract` on the same URL will retry from scratch.
+    if static_exc is not None:
+        rescue, headless_exc = await _try_headless_fallback(
+            req.url, static_exc, deadline,
+        )
+        if rescue is not None:
+            return rescue
+        return _degraded_result(req.url, static_exc, headless_exc)
+
+    # ─── Static fetch succeeded ─────────────────────────────────────────────
+    # Existing low-confidence escalation gate. `result` is guaranteed non-None
+    # here because `static_exc is None`, but narrow the type explicitly for
+    # the type-checker and surface a clear runtime error if the invariant is
+    # ever broken (instead of an opaque `assert` that disappears under -O).
+    if result is None:
+        raise RuntimeError(
+            "internal invariant broken: static_exc is None but result is None",
+        )
     if result.extraction_confidence < settings.confidence_threshold:
         if not settings.headless_function_name:
             result.escalation = "skipped"

@@ -30,17 +30,49 @@ and the in-process result type.
   Carries three diagnostic fields populated by the sync `/extract`
   handler:
   - `escalation: Literal["not_attempted","skipped","succeeded","no_improvement","failed"]`
-    — what the system did about the low-confidence static result.
-    Default `"not_attempted"` is set when static confidence ≥
-    `CONFIDENCE_THRESHOLD`.
+    — what the system did about a low-confidence static result OR a
+    static-fetch *failure*. Default `"not_attempted"` is set when
+    static confidence ≥ `CONFIDENCE_THRESHOLD`.
   - `escalation_error: str | None` — short tag like
-    `"lambda:TooManyRequestsException"` or `"TimeoutError"`. Only the
-    exception class / Lambda error code is exposed; full traceback goes
-    to CloudWatch via `logger.exception` rather than into the response
-    body.
+    `"lambda:TooManyRequestsException"`, `"TimeoutError"`, or
+    `"fetch_failed:FetchTimeoutError"`. Only the exception class /
+    Lambda error code is exposed; full traceback goes to CloudWatch
+    via `logger.exception` rather than into the response body.
   - `escalation_meta: dict[str, Any]` — `{"headless_confidence":
     float, "headless_word_count": int}` populated whenever headless
-    was attempted (success OR no-improvement). Empty dict otherwise.
+    was attempted (success OR no-improvement). For the static-fetch
+    *failure* rescue path it additionally contains `"reason":
+    "static_fetch_failed"` and `"static_error": "<ExcClass>"` so an
+    operator can distinguish a low-confidence escalation from a
+    rescue. Empty dict otherwise.
+
+## Graceful upstream-failure handling
+
+The sync `/extract` handler bounds the whole request with a
+`time.monotonic()`-relative deadline (~23s of the API Lambda's 28s
+timeout, leaving room for headless rescue + serialization). The
+deadline is threaded through `extract_pipeline` → `fetcher.static.fetch`
+so per-attempt httpx timeouts and retry budgets cannot exceed it.
+
+When the static fetcher fails (timeout, DNS, firewall/CDN block, etc.):
+
+1. If headless is configured AND ≥8s wall-clock remains, the handler
+   invokes the headless Lambda as a rescue. Success → 200 with
+   `escalation: "succeeded"`, `escalation_meta.reason ==
+   "static_fetch_failed"`.
+2. Otherwise (no headless / over-budget / headless also errored), the
+   handler returns **200 OK** with a degraded `ExtractResult`:
+   `fetcher_used == "none"`, `http_status == 0`,
+   `extraction_confidence == 0.0`, `escalation == "failed"`,
+   `escalation_error == "fetch_failed:<ExcClass>"`, and an `errors[]`
+   list containing `static_fetch_failed:<Exc>` (and, when applicable,
+   `headless_fetch_failed:<Exc>`).
+
+The deliberate non-decision: a fetcher failure does **not** surface as
+HTTP 5xx. The API itself worked; the upstream URL is what we couldn't
+reach. Clients must inspect `escalation == "failed"` (or
+`fetcher_used == "none"`) to detect this case rather than relying on
+the HTTP status code.
 
 ## Routes (current)
 

@@ -253,6 +253,64 @@ def test_process_one_captcha_body_persists_rejected_marker(aws_resources, monkey
     assert failed == 1
 
 
+def test_process_one_headless_returned_rejection_bumps_failed(aws_resources, monkeypatch):
+    """When the headless escalation succeeds shape-wise but the headless
+    worker itself ran the persist gate and persisted a rejected marker, the
+    static worker MUST mirror that on its job counter — `failed=1`, not
+    `succeeded=1` — so job-completion counters stay consistent with the
+    rest of the gate's semantics (rejected → failed)."""
+    monkeypatch.setenv("PAGES_TABLE", "brightedge-pages")
+    monkeypatch.setenv("JOBS_TABLE", "brightedge-jobs")
+    monkeypatch.setenv("RAW_HTML_BUCKET", "raw")
+    monkeypatch.setenv("HEADLESS_FUNCTION_NAME", "fake-headless-fn")
+
+    fake_result = _low_confidence_result()
+
+    async def fake_pipeline(url, *, return_html=False):
+        return fake_result, "<html>x</html>"
+
+    from crawler.workers import static_worker
+    monkeypatch.setattr(static_worker, "extract_pipeline", fake_pipeline)
+
+    def returns_rejected_payload(url, *, persist=False):
+        # Headless persisted its result as a rejected marker (its body
+        # triggered the persist gate). Payload has a valid url_hash but
+        # fetcher_used == "rejected".
+        return {
+            "url": url,
+            "url_hash": "b" * 64,
+            "fetcher_used": "rejected",
+            "http_status": 403,
+            "extraction_confidence": 0.0,
+        }
+
+    monkeypatch.setattr(
+        "crawler.workers.static_worker.invoke_headless",
+        returns_rejected_payload,
+    )
+
+    from crawler.storage.dynamo import JobsRepo
+    JobsRepo(table_name="brightedge-jobs").create(job_id="jrej", total=1)
+
+    increment_calls: list[dict] = []
+    real_increment = JobsRepo.increment
+
+    def spy_increment(self, **kwargs):
+        increment_calls.append(kwargs)
+        return real_increment(self, **kwargs)
+
+    monkeypatch.setattr(JobsRepo, "increment", spy_increment)
+
+    static_worker._process_one({"url": "http://example.com", "job_id": "jrej"})
+
+    # The escalation success branch must have bumped `failed`, not `succeeded`,
+    # because the headless-side gate already classified the page as rejected.
+    succeeded = sum(c.get("succeeded", 0) for c in increment_calls)
+    failed = sum(c.get("failed", 0) for c in increment_calls)
+    assert succeeded == 0, f"expected no succeeded bump on headless rejection, got {increment_calls}"
+    assert failed == 1, f"expected exactly one failed bump, got {increment_calls}"
+
+
 def test_process_one_5xx_persists_rejected_marker(aws_resources, monkeypatch):
     """5xx upstream errors are persisted as `upstream_error` markers, not
     counted as successful extractions."""

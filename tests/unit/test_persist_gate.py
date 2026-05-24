@@ -61,23 +61,56 @@ def test_reject_reason_403_low_confidence_blocked() -> None:
     assert reject_reason(result, "<html>access denied</html>") == "upstream_blocked"
 
 
-@pytest.mark.parametrize("status", [401, 402, 403, 429, 451])
+@pytest.mark.parametrize("status", [401, 402, 403, 451])
 def test_reject_reason_4xx_block_codes_low_confidence(status: int) -> None:
     result = _result(http_status=status, extraction_confidence=0.1)
     assert reject_reason(result, None) == "upstream_blocked"
 
 
-def test_reject_reason_429_always_blocked_regardless_of_confidence() -> None:
+@pytest.mark.parametrize("confidence", [0.0, 0.1, 0.5, 0.95, 1.0])
+def test_reject_reason_429_always_blocked_regardless_of_confidence(
+    confidence: float,
+) -> None:
     """Rate limits don't carry real content — confidence shouldn't save them.
 
-    Per spec: rule 3 short-circuits high-conf only for codes in {401,402,403,
-    429,451}. But 429 deserves a specific check because some sites cache an
-    older successful body alongside the 429 status. We still reject.
+    Unlike the other 4xx block codes (401/402/403/451), a 429 response body
+    is usually empty or a stub interstitial; the extractor's confidence
+    score on that body is unreliable. So 429 ALWAYS rejects, regardless of
+    confidence — the rate-limit reason short-circuits before the confidence
+    check.
     """
-    result = _result(http_status=429, extraction_confidence=0.95)
-    # Per the spec rule 3, high-confidence content survives 4xx block codes.
-    # So 429 with high confidence does pass. (Documents the spec.)
-    assert reject_reason(result, None) is None
+    result = _result(http_status=429, extraction_confidence=confidence)
+    assert reject_reason(result, None) == "upstream_rate_limited"
+
+
+@pytest.mark.parametrize(
+    ("status", "confidence", "expected"),
+    [
+        # Just below the floor: still rejected.
+        (401, 0.49, "upstream_blocked"),
+        (402, 0.49, "upstream_blocked"),
+        (403, 0.49, "upstream_blocked"),
+        (451, 0.49, "upstream_blocked"),
+        # Exactly at the floor: passes (rule uses `>=`).
+        (401, 0.50, None),
+        (402, 0.50, None),
+        (403, 0.50, None),
+        (451, 0.50, None),
+        # Just above the floor: passes.
+        (401, 0.51, None),
+        (402, 0.51, None),
+        (403, 0.51, None),
+        (451, 0.51, None),
+    ],
+)
+def test_reject_reason_block_code_confidence_floor_boundary(
+    status: int, confidence: float, expected: str | None
+) -> None:
+    """Boundary-value coverage at the 0.5 confidence floor for non-429 4xx
+    block codes. Confidence exactly at the floor passes (inclusive); strictly
+    below the floor rejects."""
+    result = _result(http_status=status, extraction_confidence=confidence)
+    assert reject_reason(result, None) == expected
 
 
 def test_reject_reason_404_passes() -> None:

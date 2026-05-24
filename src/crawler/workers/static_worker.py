@@ -62,8 +62,16 @@ def _process_one(message_body: dict) -> None:
                     raise RuntimeError(
                         f"headless returned unusable payload: {str(data)[:300]}"
                     )
+                # The headless worker runs the persist gate too. If it
+                # classified the page as rejected (Cloudflare, captcha, 5xx,
+                # rate-limit), mirror that on the job counter — rejected
+                # rows are `failed`, not `succeeded`, by the rest of the
+                # gate's semantics.
                 if jobs:
-                    jobs.increment(job_id=job_id, succeeded=1)
+                    if data.get("fetcher_used") == "rejected":
+                        jobs.increment(job_id=job_id, failed=1)
+                    else:
+                        jobs.increment(job_id=job_id, succeeded=1)
                 return
             except Exception:  # noqa: BLE001
                 logger.exception("headless escalation failed; keeping static result")

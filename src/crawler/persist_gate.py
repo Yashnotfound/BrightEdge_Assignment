@@ -22,7 +22,14 @@ from crawler.fetcher.confidence import is_likely_captcha
 # block (selected 4xx). 404 is deliberately omitted — an honest "page doesn't
 # exist" is fine to persist with a low confidence score.
 _UPSTREAM_ERROR_CODES = frozenset({500, 502, 503, 504})
-_UPSTREAM_BLOCK_CODES = frozenset({401, 402, 403, 429, 451})
+# Block codes whose body is sometimes still real content (Medium/Reddit 403,
+# 451 with a stub landing page, etc.). High confidence on these overrides the
+# rejection.
+_UPSTREAM_BLOCK_CODES = frozenset({401, 402, 403, 451})
+# Rate-limit responses are categorically different: the body is almost always
+# empty or a stub, so the extractor's confidence on it is unreliable. These
+# always reject regardless of confidence.
+_UPSTREAM_RATE_LIMIT_CODES = frozenset({429})
 # Above this confidence floor, a 4xx block code is overridden — sites like
 # Medium and Reddit sometimes return 403 alongside real article HTML, and we
 # don't want the gate to throw out real content.
@@ -33,9 +40,9 @@ def reject_reason(result: ExtractResult, html: str | None) -> str | None:
     """Decide whether `result` should be persisted as a `rejected` marker
     row instead of normal content.
 
-    Returns a short reason string (`"upstream_error"`, `"upstream_blocked"`,
-    `"captcha"`, or `"interstitial"`) when the result should be rejected, or
-    `None` when it passes and should be persisted normally.
+    Returns one of `"upstream_error"`, `"upstream_rate_limited"`,
+    `"upstream_blocked"`, or `"captcha"` when the result should be rejected,
+    or `None` when it passes and should be persisted normally.
 
     Rules apply in priority order; the first match wins:
 
@@ -43,11 +50,14 @@ def reject_reason(result: ExtractResult, html: str | None) -> str | None:
        the caller is handling separately. Don't double-reject.
     2. 5xx → `"upstream_error"`. Operational failure; no point storing the
        (possibly empty) error body as if it were a page.
-    3. 4xx block codes ({401, 402, 403, 429, 451}) → `"upstream_blocked"`,
+    3. 429 → `"upstream_rate_limited"`. Always rejects, regardless of
+       confidence — rate-limit bodies are stubs and the confidence score on
+       them is not trustworthy.
+    4. 4xx block codes ({401, 402, 403, 451}) → `"upstream_blocked"`,
        UNLESS the extractor is at least `_BLOCK_CONFIDENCE_FLOOR` confident
        — in which case Medium/Reddit-style "403 + real body" content gets
        through.
-    4. Captcha fingerprint in body → `"captcha"`. Catches Cloudflare's
+    5. Captcha fingerprint in body → `"captcha"`. Catches Cloudflare's
        'Access Denied' challenge and similar bot walls on any status code.
     """
     if result.fetcher_used == "none":
@@ -55,6 +65,9 @@ def reject_reason(result: ExtractResult, html: str | None) -> str | None:
 
     if result.http_status in _UPSTREAM_ERROR_CODES:
         return "upstream_error"
+
+    if result.http_status in _UPSTREAM_RATE_LIMIT_CODES:
+        return "upstream_rate_limited"
 
     if result.http_status in _UPSTREAM_BLOCK_CODES:
         if result.extraction_confidence >= _BLOCK_CONFIDENCE_FLOOR:

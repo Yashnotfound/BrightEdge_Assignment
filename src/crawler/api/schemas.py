@@ -17,7 +17,7 @@ class ExtractResult(BaseModel):
     url: str
     url_hash: str
     fetched_at: datetime
-    fetcher_used: str  # "static" | "headless"
+    fetcher_used: str  # "static" | "headless" | "none" | "rejected"
     http_status: int
     content_type: str | None = None
     language: str | None = None

@@ -98,7 +98,7 @@ async def _fetch_headless(url: str) -> tuple[str, int]:
             await browser.close()
 
 
-async def _persist_headless(result: ExtractResult, html: str) -> ExtractResult:
+async def _persist_headless(result: ExtractResult, html: str | None) -> ExtractResult:
     """Mirror of routes._persist for the headless worker: parallel S3 writes,
     then a DynamoDB write that references the resulting URIs.
 
@@ -106,11 +106,15 @@ async def _persist_headless(result: ExtractResult, html: str) -> ExtractResult:
     a rejected marker, the S3 raw-HTML write is skipped, and the DDB row is
     still written so /pages keeps the audit trail. Returns the result that
     was actually persisted (may differ from input).
+
+    `html=None` is the skip-S3 sentinel (matches `routes._persist` style); an
+    empty string `""` is a legitimately-empty body that still gets written
+    so the row's `s3_html_uri` reflects what was fetched.
     """
     reason = reject_reason(result, html)
     if reason is not None:
         result = to_rejected(result, reason)
-        html = ""  # signal "skip the S3 raw-HTML write" below
+        html = None  # sentinel: "skip the S3 raw-HTML write" — distinct from ""
 
     s = load_settings()
     if not s.raw_html_bucket or not s.pages_table:
@@ -125,7 +129,7 @@ async def _persist_headless(result: ExtractResult, html: str) -> ExtractResult:
             url_hash=result.url_hash, domain=domain,
             fetched_at_iso=fetched_iso, html=html,
         )
-        if html
+        if html is not None
         else None
     )
     jsonld_task = (

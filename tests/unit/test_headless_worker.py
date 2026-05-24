@@ -146,6 +146,59 @@ def test_persist_skips_when_settings_unconfigured(monkeypatch):
     asyncio.run(headless_worker._persist_headless(fake_result, "<html></html>"))
 
 
+def test_persist_writes_s3_for_legitimately_empty_html(monkeypatch):
+    """A passing result whose fetched HTML is the empty string MUST still
+    trigger the S3 raw-HTML write — empty body on a 200 is valid (degenerate)
+    content, not a gate-rejection sentinel.
+
+    Regression: previously the gate path reassigned `html = ""` after firing
+    and the S3 write was gated on `if html:`, which silently dropped any
+    legitimately-empty body too. The fix uses `None` as the skip sentinel
+    so the empty-string case round-trips to S3."""
+    import asyncio
+    from datetime import UTC, datetime
+    from unittest.mock import MagicMock, patch
+
+    monkeypatch.setenv("PAGES_TABLE", "brightedge-pages")
+    monkeypatch.setenv("RAW_HTML_BUCKET", "raw")
+
+    from crawler.api.schemas import ExtractResult
+    from crawler.workers import headless_worker
+
+    # A passing result: 200, no captcha-triggering title, high enough
+    # confidence that no gate rule fires.
+    result = ExtractResult(
+        url="http://example.com/empty",
+        url_hash="e" * 64,
+        fetched_at=datetime(2026, 5, 24, tzinfo=UTC),
+        fetcher_used="headless",
+        http_status=200,
+        title="Empty Body Page",
+        extraction_confidence=0.9,
+    )
+
+    put_raw_html = MagicMock(return_value="s3://raw/x")
+    put_jsonld = MagicMock(return_value=None)
+    pages_put = MagicMock(return_value=None)
+
+    with (
+        patch.object(headless_worker.RawHtmlStore, "put_raw_html", put_raw_html),
+        patch.object(headless_worker.RawHtmlStore, "put_jsonld", put_jsonld),
+        patch.object(headless_worker.PagesRepo, "put", pages_put),
+    ):
+        asyncio.run(headless_worker._persist_headless(result, ""))
+
+    # The S3 raw-HTML write MUST have happened — the body, although empty,
+    # is real content, not a gate-skip sentinel.
+    assert put_raw_html.called, "put_raw_html should be called for empty-but-passing body"
+    call_kwargs = put_raw_html.call_args.kwargs
+    assert call_kwargs["html"] == ""
+    assert call_kwargs["url_hash"] == "e" * 64
+
+    # DDB row still written.
+    assert pages_put.called
+
+
 def test_handler_persists_rejected_marker_for_captcha_body(aws_resources, monkeypatch):
     """When the headless fetch lands on a captcha-fingerprint page (e.g. the
     Cloudflare 'Just a Moment' interstitial), the persist gate must replace

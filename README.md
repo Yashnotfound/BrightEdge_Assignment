@@ -52,6 +52,34 @@ curl -X POST "$API/extract" -H "Authorization: Bearer $KEY" -H 'Content-Type: ap
 The web form at `/` has a password field for the key — paste it once and
 the browser remembers it via `localStorage` for subsequent extractions.
 
+> ### A note on Lambda cold starts — please retry if a request fails
+>
+> The live demo runs entirely on AWS Lambda (zip-package API + static worker,
+> container-image headless worker). After a period of inactivity each function
+> goes cold and the **first** request has to:
+>
+> - Spin up a fresh micro-VM,
+> - Mount the deployment artifact (the headless function pulls a ~500 MB
+>   container image with chromium),
+> - Import Python deps (`trafilatura`, `yake`, `playwright`, …),
+> - Open boto3 / SQS clients.
+>
+> Expected cold-start latency (unverified; actual numbers vary with Lambda
+> memory, image cache state, and AWS-internal scheduling): roughly **a few
+> seconds for the API function** and **closer to ten seconds or more for the
+> headless worker** the first time after a long idle period. You will
+> occasionally see API Gateway return `504 Gateway Timeout` or `502 Bad
+> Gateway` while a container image is still pulling. **If a request fails —
+> especially the very first one in a session — just re-run the same `curl`
+> command (or click "Extract" again in the web form).** The second call lands
+> on a warm container and behaves normally (typically sub-second for static
+> pages, a few seconds when the headless escalation fires).
+>
+> The static fetcher itself retries transient `httpx` errors up to 2 times
+> (3 total attempts; see [`src/crawler/fetcher/static.py`](src/crawler/fetcher/static.py)),
+> but a cold-start `504` from API Gateway happens *before* any code runs, so
+> it can't be handled in-Lambda — it has to be retried by the client.
+
 ## Architecture (live system)
 
 ```mermaid
@@ -155,7 +183,7 @@ API_KEY="any-secret-you-pick" uvicorn crawler.api.main:app --port 8000
 # Then send: curl -H 'Authorization: Bearer any-secret-you-pick' …
 
 # Tests
-pytest    # 87 passing
+pytest    # 89 tests
 ```
 
 ## Deployment

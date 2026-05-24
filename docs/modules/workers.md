@@ -58,15 +58,25 @@ own persist on successful escalation.
 
 ## Tests
 
-`tests/test_static_worker.py` mocks SQS event shape and asserts DDB/S3
-side effects. `tests/test_headless_worker.py` stubs `playwright` and checks
-that `process_html` is fed the right arguments.
+`tests/unit/test_static_worker.py` mocks the SQS event shape and asserts
+DDB/S3 side effects + headless-escalation branching. The headless worker
+has **no dedicated unit suite** — its launch flags, sparticuz integration,
+and persistence path are validated end-to-end via `scripts/smoke.sh`
+against the deployed stack rather than mocked locally.
 
 ## Deployment
 
 - **static_worker**: regular zip-package Lambda; trigger = `STATIC_QUEUE_URL`.
 - **headless_worker**: container-image Lambda (`infra/headless.Dockerfile`);
   ARN exposed to the API + static-worker via `HEADLESS_FUNCTION_NAME` env var.
-  Requires `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` and `HOME=/tmp`
-  in the Lambda environment so chromium can find the binary and write
-  scratch state from the non-root runtime user.
+  Required env vars (`infra/template.yaml`):
+  - `CHROMIUM_EXECUTABLE=/opt/chromium/chromium` — read by `_fetch_headless`
+    and passed to `chromium.launch(executable_path=...)`. The chromium binary
+    is the *only* one we actually point Playwright at; `headless.Dockerfile`
+    bakes this via an `ENV` directive too, the template export is a belt-and-
+    braces fallback.
+  - `HOME=/tmp` — Lambda's runtime user can only write under `/tmp`, and
+    chromium creates scratch files on startup.
+  - `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` — set but **not consumed**
+    by the worker (it passes `executable_path` directly). Kept to suppress
+    Playwright's startup warning about a missing bundled-browser cache.

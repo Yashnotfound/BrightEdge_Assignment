@@ -9,7 +9,7 @@ specific module doc for any subpackage you need to change.
 |---|---|---|
 | `pipeline.py` | (this file, §Pipeline below) | Orchestrates fetch → extract → classify into one `ExtractResult`. |
 | `config.py` | (this file, §Config below) | Env-driven `Settings` dataclass loaded by every Lambda. |
-| `fixtures.py` | (this file, §Fixtures below) | Hard-coded Amazon response for `?fixture=1` demo fallback. |
+| `fixtures.py` | (this file, §Fixtures below) | Hard-coded fallback responses (Amazon, REI, CNN) for `?fixture=1` demo mode. |
 | `__init__.py` | — | Empty marker. |
 | [`api/`](api.md) | api.md | FastAPI app, routes (`/extract`, `/batch`, `/jobs`, `/pages`), Pydantic schemas. |
 | [`classifier/`](classifier.md) | classifier.md | Heuristic candidates, YAKE keyphrases, topic fusion. |
@@ -39,6 +39,7 @@ api.routes.batch
 
 - `extract_pipeline(url, *, return_html=False)` — async; fetches with static HTTPX, then runs `_process`. Returns `ExtractResult` (or `(ExtractResult, html)`).
 - `process_html(*, url, html, http_status, content_type, fetcher_used)` — sync; entry point for callers that already have HTML (used by `workers/headless_worker.py`).
+- `process_html_timed(...)` — same signature as `process_html`, but also returns a `dict[str, float]` of per-stage wall-clock timings in ms. Used by `scripts/bench_pipeline.py`. Production code paths should use `process_html`; the same per-stage numbers are emitted via `logger.info("pipeline.timing", …)` for log-based observability.
 - Body text is truncated to `_BODY_TEXT_LIMIT` (50KB) before being placed on the result.
 
 ## Config (`src/crawler/config.py`)
@@ -60,17 +61,25 @@ Empty string defaults are intentional — they let local dev skip persistence.
 
 ## Fixtures (`src/crawler/fixtures.py`)
 
-`amazon_toaster() -> ExtractResult` returns a hand-curated extraction for the
-Cuisinart toaster URL so the `?fixture=1` demo path works without hitting
-Amazon's anti-bot wall.
+Three hand-curated `ExtractResult` builders, one per assignment test URL:
+
+- `amazon_toaster()` — Cuisinart CPT-122 product page (anti-bot fallback).
+- `rei_outdoors()` — REI Co-op blog post on introducing a friend to the outdoors.
+- `cnn_tech()` — CNN article on AI's impact on tech jobs.
+
+Selected in `api.routes.extract` when `?fixture=1` is set and the requested URL
+matches one of the three. Each fixture sets `fetcher_used="fixture"` and an
+`errors[]` entry that documents the fallback so reviewers see exactly what
+happened.
 
 ## Tests
 
-Tests live under `tests/` (mirrored layout where useful). Run with:
+Tests live under `tests/unit/` (one file per module) and `tests/eval/`
+(accuracy regression suite over labeled fixtures). Run with:
 
 ```bash
-pytest                       # all
-pytest tests/test_pipeline.py
+pytest                            # all
+pytest tests/unit/test_pipeline.py
 pytest -k classifier
 ```
 

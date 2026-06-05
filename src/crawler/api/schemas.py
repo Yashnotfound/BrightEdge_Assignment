@@ -4,7 +4,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from crawler.fetcher.url_safety import validate_url
 
 
 class Topic(BaseModel):
@@ -42,9 +44,29 @@ class ExtractResult(BaseModel):
 class ExtractRequest(BaseModel):
     url: str
 
+    @field_validator("url")
+    @classmethod
+    def _validate_url_safety(cls, v: str) -> str:
+        # SSRF guard: reject internal / metadata / loopback targets. Raises
+        # `UnsafeUrlError` (a ValueError subclass) — Pydantic converts that
+        # into a 422 response with the field highlighted.
+        validate_url(v)
+        return v
+
 
 class BatchRequest(BaseModel):
     urls: list[str] = Field(min_length=1, max_length=1000)
+
+    @field_validator("urls")
+    @classmethod
+    def _validate_each_url_safety(cls, v: list[str]) -> list[str]:
+        # Validate every URL in the batch. Any unsafe URL fails the whole
+        # batch — caller has to fix and resubmit. Cleaner than partial
+        # acceptance for the same defensive reasons we reject obviously
+        # bad SQL or oversize payloads at the API boundary.
+        for url in v:
+            validate_url(url)
+        return v
 
 
 class BatchResponse(BaseModel):

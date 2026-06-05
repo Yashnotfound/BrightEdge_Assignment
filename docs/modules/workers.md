@@ -11,7 +11,7 @@ direct-invoked and runs Playwright/chromium inside a container image.
 | File | One-liner |
 |---|---|
 | `static_worker.py` | SQS-triggered batch processor; calls `pipeline.extract_pipeline`, persists to S3+DDB, bumps job counters. |
-| `headless_worker.py` | Direct-invoke (`{url, persist?}`); fetches HTML via Playwright pointed at sparticuz/chromium (`CHROMIUM_EXECUTABLE` env var = `/opt/chromium/chromium`), Lambda-hardened launch flags, `wait_until="networkidle"` with a 15s page-load timeout followed by a bounded `wait_for_function` poll for `document.body.innerText.length > 200` (3s cap) so React/Vue SPAs have a chance to hydrate, then runs `pipeline.process_html`. Worst-case wait is ~18s; Lambda timeout is 60s. |
+| `headless_worker.py` | Direct-invoke (`{url, persist?}`); fetches HTML via Playwright pointed at sparticuz/chromium (`CHROMIUM_EXECUTABLE` env var = `/opt/chromium/chromium`), Lambda-hardened launch flags, `wait_until="networkidle"` with a 15s page-load timeout followed by a bounded `wait_for_function` poll for `document.body.innerText.length > 200` (3s cap) so React/Vue SPAs have a chance to hydrate, then runs `pipeline.process_html`. Worst-case wait is ~18s; Lambda timeout is 60s. SSRF-guarded: `validate_url` runs at the entry of `_fetch_headless` (short-circuits before booting Chromium), and a Playwright `context.route("**/*", ...)` handler aborts any in-page request whose URL fails `validate_url` (catches in-page redirects + sub-resource loads that would otherwise leak through). |
 | `__init__.py` | Empty marker. |
 
 ## Public API
@@ -101,6 +101,7 @@ is still written so `/pages` keeps the audit trail.
 
 - `crawler.pipeline.extract_pipeline` (static) and `crawler.pipeline.process_html` (headless).
 - `crawler.fetcher.headless.invoke_headless` (static-worker escalation).
+- `crawler.fetcher.url_safety` — `validate_url` / `UnsafeUrlError` (defense-in-depth SSRF guard in `headless_worker._fetch_headless` entry + Playwright route handler; `static_worker` reaches it transitively through `extract_pipeline → static.fetch`).
 - `crawler.persist_gate` — `reject_reason` / `to_rejected` (filter garbage before DDB), `build_fetch_failed_result` (degraded marker for the fetch-failure path).
 - `crawler.storage.dynamo.{PagesRepo,JobsRepo}`, `crawler.storage.s3.RawHtmlStore`.
 - `crawler.config.load_settings`.
@@ -109,10 +110,12 @@ is still written so `/pages` keeps the audit trail.
 ## Tests
 
 `tests/unit/test_static_worker.py` mocks the SQS event shape and asserts
-DDB/S3 side effects + headless-escalation branching. The headless worker
-has **no dedicated unit suite** — its launch flags, sparticuz integration,
-and persistence path are validated end-to-end via `scripts/smoke.sh`
-against the deployed stack rather than mocked locally.
+DDB/S3 side effects + headless-escalation branching.
+`tests/unit/test_headless_worker.py` covers the handler wiring with a
+monkeypatched `_fetch_headless`, plus the SSRF entry-point short-circuit
+(blocked URL → raises `UnsafeUrlError` BEFORE Playwright import / browser
+boot). The full Playwright launch flags and sparticuz integration are still
+validated end-to-end via `scripts/smoke.sh` against the deployed stack.
 
 ## Deployment
 

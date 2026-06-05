@@ -10,16 +10,19 @@ enough to keep. Also: robots.txt politeness and User-Agent rotation.
 
 | File | One-liner |
 |---|---|
-| `static.py` | Async HTTPX fetcher with realistic headers, retries, 5MB cap; returns `FetchResult`. |
+| `static.py` | Async HTTPX fetcher with realistic headers, retries, 5MB cap, manual per-hop SSRF-validated redirect following; returns `FetchResult`. |
 | `headless.py` | `invoke_headless(url, persist=False)` — sync Lambda invoke of the chromium worker. |
 | `confidence.py` | `score_confidence(...)` (0.0–1.0) and `is_likely_captcha(title, body)`. |
+| `url_safety.py` | `validate_url(url)` — SSRF guard rejecting RFC1918, loopback, link-local (incl. AWS metadata), CGNAT, multicast, documentation/test-net, IPv6 ULA, link-local, NAT64, and IPv4-mapped IPv6. Raises `UnsafeUrlError` (a `ValueError`). |
 | `robots.py` | `can_fetch(url, ua) -> RobotsDecision` with 24h in-process LRU cache. |
 | `user_agents.py` | `pick()` returns a random realistic browser UA. |
 | `__init__.py` | Empty marker. |
 
 ## Public API
 
-- `crawler.fetcher.static.fetch(url, *, timeout, max_bytes, retries, deadline) -> FetchResult` — async. When `deadline` is set (a `time.monotonic()`-relative absolute timestamp), per-attempt httpx timeouts are clamped to the remaining budget, and retries stop as soon as the budget would not fit one more attempt. This is the contract the route handler relies on to guarantee the fetcher returns before AWS Lambda kills the process on its own 28s ceiling.
+- `crawler.fetcher.static.fetch(url, *, timeout, max_bytes, retries, deadline) -> FetchResult` — async. When `deadline` is set (a `time.monotonic()`-relative absolute timestamp), per-attempt httpx timeouts are clamped to the remaining budget, and retries stop as soon as the budget would not fit one more attempt. This is the contract the route handler relies on to guarantee the fetcher returns before AWS Lambda kills the process on its own 28s ceiling. Calls `url_safety.validate_url` at the entry point AND at each redirect hop (manual redirect loop, capped at `MAX_REDIRECTS=5`); raises `UnsafeUrlError` if any hop targets a blocked address.
+- `crawler.fetcher.url_safety.validate_url(url) -> None` — pure SSRF guard. Resolves the host via DNS and rejects if any returned IP falls in the blocked ranges (RFC1918, loopback, link-local incl. 169.254.169.254 AWS metadata, CGNAT, multicast, documentation/test-net, IPv6 ULA, IPv6 link-local, NAT64, IPv4-mapped IPv6). Any-blocked-IP semantics defeat DNS-rebinding attacks where a hostname resolves to a mix of public and blocked addresses. Used by Pydantic field validators in `crawler.api.schemas` and by both fetchers (defense in depth).
+- `crawler.fetcher.url_safety.UnsafeUrlError` — `ValueError` subclass; Pydantic surfaces these as 422 responses with the bad field highlighted.
 - `crawler.fetcher.static.FetchTimeoutError` — `httpx.TimeoutException` subclass raised when the deadline budget is exhausted (distinct from a network-level timeout).
 - `crawler.fetcher.static.FetchResult` — frozen dataclass: `url`, `final_url`, `http_status`, `content_type`, `html`, `fetched_via`.
 - `crawler.fetcher.headless.invoke_headless(url, *, persist=False) -> dict` — sync; returns the raw `ExtractResult.model_dump(mode="json")` produced by the headless Lambda. Raises `RuntimeError` when the Lambda response carries `FunctionError`, so error-shaped payloads (`errorType`/`errorMessage`) are never silently returned as if they were ExtractResults.

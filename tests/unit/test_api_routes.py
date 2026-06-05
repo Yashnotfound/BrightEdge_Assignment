@@ -10,6 +10,12 @@ from fastapi.testclient import TestClient
 from crawler.api.main import app
 from crawler.api.schemas import ExtractResult, Topic
 
+# Note: the SSRF guard added to ExtractRequest/BatchRequest resolves hosts
+# via DNS at validation time. A global autouse `_stub_dns` fixture in
+# tests/conftest.py maps all hosts to a benign public IP so the fake test
+# hostnames here (http://x.com, http://blocked.example/, etc.) pass
+# validation without a live DNS query.
+
 
 def test_extract_requires_auth_when_key_is_set(monkeypatch):
     """When API_KEY is set, /extract without Authorization returns 401."""

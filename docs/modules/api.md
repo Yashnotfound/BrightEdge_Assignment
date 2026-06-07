@@ -13,7 +13,7 @@ and the in-process result type.
 | `main.py` | FastAPI app factory + `/` (HTML demo) + `/health` + Mangum `handler` for Lambda. |
 | `routes.py` | `/extract` (+ `?fixture=1` shortcut that returns a saved response when the URL matches Amazon/REI/CNN), `/pages`, `/pages/{url_hash}`, `/batch`, `/jobs/{job_id}`. Data endpoints carry `Depends(require_api_key)`. |
 | `auth.py` | `require_api_key` FastAPI dependency built on `fastapi.security.HTTPBearer`. No-op when `API_KEY` env is empty; otherwise enforces `Authorization: Bearer <key>` with `hmac.compare_digest`. Registering via `HTTPBearer` puts the scheme in the OpenAPI doc so Swagger UI renders an Authorize button. |
-| `schemas.py` | `ExtractResult`, `Topic`, `ExtractRequest`, `BatchRequest`, `BatchResponse`, `JobStatus`. |
+| `schemas.py` | `ExtractResult`, `Topic`, `ExtractRequest`, `BatchRequest`, `BatchResponse`, `JobStatus`. `ExtractRequest.url` and `BatchRequest.urls` carry `field_validator`s that call `crawler.fetcher.url_safety.validate_url` — unsafe URLs (RFC1918, loopback, link-local incl. AWS metadata, etc.) surface as 422 with the bad field highlighted. /batch rejects the whole batch on any unsafe URL. |
 | `__init__.py` | Empty marker. |
 
 ## Public API
@@ -100,6 +100,7 @@ rejection in the response.
 
 - `crawler.pipeline` — `extract_pipeline` (async; awaited from the `/extract` handler).
 - `crawler.fetcher.headless` — `invoke_headless` (low-confidence escalation).
+- `crawler.fetcher.url_safety` — `validate_url` (called from `schemas.py` field validators; SSRF guard).
 - `crawler.persist_gate` — `reject_reason` / `to_rejected` (filter garbage before DDB), `build_fetch_failed_result` (degraded `ExtractResult` shape for the static-fetch-failure path).
 - `crawler.storage.{dynamo,s3,hashing}` — persistence.
 - `crawler.config` — env-driven settings.
@@ -108,5 +109,9 @@ rejection in the response.
 
 ## Tests
 
-`tests/unit/test_api_routes.py` covers the routes; `tests/unit/test_pipeline.py`
-covers the end-to-end `/extract` flow. Smoke tests live in `scripts/smoke.sh`.
+`tests/unit/test_api_routes.py` covers the routes (with an autouse DNS
+fixture that makes fake test hostnames resolve to a benign public IP, so
+the new SSRF guard doesn't reject them at validation time);
+`tests/unit/test_schemas.py` covers the Pydantic field validators directly;
+`tests/unit/test_pipeline.py` covers the end-to-end `/extract` flow. Smoke
+tests live in `scripts/smoke.sh`.

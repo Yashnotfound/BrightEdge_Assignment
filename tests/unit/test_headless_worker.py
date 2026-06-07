@@ -199,6 +199,34 @@ def test_persist_writes_s3_for_legitimately_empty_html(monkeypatch):
     assert pages_put.called
 
 
+def test_fetch_headless_rejects_blocked_url_without_booting_chromium(monkeypatch):
+    """The SSRF guard at the entry of `_fetch_headless` must short-circuit
+    before any Playwright import or browser boot. We assert this by
+    monkeypatching `socket.getaddrinfo` to flag 169.254.169.254 → loopback
+    range, and confirming `UnsafeUrlError` raises without any
+    `async_playwright` activity.
+
+    This is the worker-side analogue of the API-layer Pydantic validation.
+    A future code path that direct-invokes the headless lambda without
+    routing through `/extract` would otherwise bypass the input check.
+    """
+    import socket
+    import asyncio
+    from crawler.fetcher.url_safety import UnsafeUrlError
+    from crawler.workers import headless_worker
+
+    def _fake_getaddrinfo(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 0, "",
+                 ("169.254.169.254", port or 0))]
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo)
+
+    # If the guard short-circuits properly, this never touches Playwright.
+    # If it doesn't, the test fails with an ImportError or browser-launch
+    # error rather than the expected UnsafeUrlError — also a clear signal.
+    with pytest.raises(UnsafeUrlError):
+        asyncio.run(headless_worker._fetch_headless("http://169.254.169.254/"))
+
+
 def test_handler_persists_rejected_marker_for_captcha_body(aws_resources, monkeypatch):
     """When the headless fetch lands on a captcha-fingerprint page (e.g. the
     Cloudflare 'Just a Moment' interstitial), the persist gate must replace

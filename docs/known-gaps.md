@@ -28,6 +28,41 @@ ability to enumerate the job's results.
   per-URL outcome; populate `manifest_s3_uri`. Designed for in the scale
   doc — not built.
 
+### Duplicate URLs in `/batch` leave jobs stuck at `running`
+
+`POST /batch` does not dedupe `req.urls` before sizing the job. A request
+containing N copies of the same URL creates a job with `total=N` and enqueues
+N SQS messages. The workers' `try_claim_for_job` correctly refuses to
+double-count the per-URL outcome (one sticker per `(job_id, url_hash)`), so
+`succeeded + failed` only ever reaches the number of *distinct* URLs in the
+batch. The terminal-status check `succeeded + failed >= total` is therefore
+unreachable, and the job stays in `running` forever.
+
+- **Impact:** Caller polling `GET /jobs/{job_id}` never sees a terminal
+  state and may retry/abandon. Also wastes N HTTP fetches against the
+  origin (no request-level dedupe in the pipeline) — a small burst that
+  looks DoS-ish to the target.
+- **Code:** [src/crawler/api/routes.py:329](src/crawler/api/routes.py:329)
+  (`total=len(req.urls)` with no dedupe);
+  [src/crawler/storage/dynamo.py:211](src/crawler/storage/dynamo.py:211)
+  (terminal condition `succeeded + failed >= total`);
+  [src/crawler/workers/static_worker.py:117-120](src/crawler/workers/static_worker.py:117)
+  (correct claim-token dedupe whose `succeeded + failed` can never reach
+  the over-counted `total`).
+- **Direction:** Dedupe at the front door — apply the same normalisation
+  used by `crawler.storage.hashing.normalize_url` (lower-cased scheme +
+  host, trailing-slash handling, etc.) and key the dedupe on that, not on
+  raw string equality. Otherwise `http://Example.com/` and
+  `http://example.com` submitted together still produce two SQS messages
+  and one `url_hash`, recreating the stuck-job failure under a different
+  cause. Simplest implementation: build `seen: set[str]` keyed by
+  `url_hash(u)`, keep the first occurrence's original-string form, drop
+  the rest, then size `total` from the deduped list before
+  `JobsRepo.create` and the SQS send. A noisier alternative is to keep
+  `total=len(urls)` and have `try_claim_for_job` return enough info for
+  the worker to `ADD total -1` on repeats, but that complicates the
+  claim contract for no real upside at PoC scale.
+
 ### Empirical confidence floor for 4xx persist-gate
 
 `persist_gate.reject_reason` lets HTTP 401/402/403/451 responses through when
@@ -42,6 +77,25 @@ observed data and is not derived from a labeled dataset.
 - **Direction:** Sample 50–100 URLs per HTTP code/domain combination,
   hand-label real vs garbage, fit a logistic-regression-style threshold.
   Per-domain overrides for the worst offenders (Cloudflare-fronted SaaS).
+
+### [RESOLVED] No SSRF validation on user-supplied URLs
+Input URLs are now validated at three layers before any outbound request:
+(1) Pydantic field validators on `ExtractRequest.url` and
+`BatchRequest.urls` (returns 422 for unsafe input); (2) `validate_url` at
+the entry point of `crawler.fetcher.static.fetch` and
+`crawler.workers.headless_worker._fetch_headless` (defense in depth for
+direct-invoke code paths); (3) per-hop re-validation during redirect
+chains — `static.py` does this manually (after disabling
+`follow_redirects=True`), and the headless worker registers a Playwright
+`context.route` handler that aborts requests to blocked hosts. Blocked
+ranges cover RFC1918, loopback, link-local (incl. AWS metadata at
+169.254.169.254), CGNAT, multicast, IPv6 ULA + link-local, and
+IPv4-mapped IPv6. DNS-rebinding is defeated by resolving the host and
+checking every returned IP — any blocked address rejects the URL. New
+module `src/crawler/fetcher/url_safety.py`; tests in
+`tests/unit/test_url_safety.py` (scheme, IPv4/IPv6 blocked ranges,
+DNS-rebinding, malformed input) plus updates to `test_schemas.py`,
+`test_fetcher_static.py`, and `test_headless_worker.py`.
 
 ### [RESOLVED] Sync `/extract` has graceful fetch-failure; static worker does not
 Static worker now persists a degraded fetch-failed marker row and stops

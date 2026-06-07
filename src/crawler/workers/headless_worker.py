@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 
 from crawler.api.schemas import ExtractResult
 from crawler.config import load_settings
+from crawler.fetcher.url_safety import UnsafeUrlError, validate_url
 from crawler.persist_gate import reject_reason, to_rejected
 from crawler.pipeline import process_html
 from crawler.storage.dynamo import PagesRepo
@@ -18,6 +19,13 @@ logger.setLevel(logging.INFO)
 
 
 async def _fetch_headless(url: str) -> tuple[str, int]:
+    # SSRF guard — defense in depth. The API layer (Pydantic) should have
+    # validated, and the static worker also validates before invoking us,
+    # but a direct invoke (or future code path) could bypass both. Raise
+    # `UnsafeUrlError` BEFORE booting Chromium so we don't waste a few
+    # seconds spinning up a browser just to block the navigation.
+    validate_url(url)
+
     from playwright.async_api import async_playwright  # imported lazily
 
     # Sparticuz/chromium recommended args. The longer list disables features
@@ -74,6 +82,20 @@ async def _fetch_headless(url: str) -> tuple[str, int]:
                 ),
                 locale="en-US",
             )
+            # SSRF guard for in-page navigations and sub-resource loads.
+            # Playwright follows redirects internally — without intercepting
+            # at the request layer, a 302 to 169.254.169.254 would bypass
+            # the entry-point `validate_url` call. The handler also blocks
+            # malicious sub-resources (an `<img src="http://10.0.0.1/...">`
+            # would otherwise leak that we visited the page).
+            async def _block_unsafe(route, request):
+                try:
+                    validate_url(request.url)
+                except UnsafeUrlError:
+                    await route.abort("blockedbyclient")
+                    return
+                await route.continue_()
+            await context.route("**/*", _block_unsafe)
             page = await context.new_page()
             # `networkidle` waits for the network to be quiet for ~500ms — the right
             # primitive for SPAs (React/Vue/etc.) whose content paints AFTER initial
